@@ -18,10 +18,10 @@ Build a **data analysis chat agent** for non-technical retail executives that:
 
 | # | Deliverable | Where it will live | Status |
 |---|-------------|--------------------|--------|
-| 1 | Architecture diagram (Mermaid) | `docs/architecture.md` + this README | ☐ |
-| 2a | Reasoning for cloud services / LLM / framework choices | `docs/technical_design.md` | ☐ |
-| 2b | Data flow between components | `docs/technical_design.md` | ☐ |
-| 2c | Error handling & fallback strategies | `docs/technical_design.md` | ☐ |
+| 1 | Architecture diagram (Mermaid) | `docs/architecture.md` | ☑ v1 |
+| 2a | Reasoning for cloud services / LLM / framework choices | `docs/technical_design.md` | ☑ v1 |
+| 2b | Data flow between components | `docs/technical_design.md` | ☑ v1 |
+| 2c | Error handling & fallback strategies | `docs/technical_design.md` | ☑ v1 |
 | 2d | Setup instructions + example run | `README.md` | ☐ |
 | 2e | How each of the 8 requirements is solved | `docs/requirements.md` | ☐ |
 | 3 | Working prototype (Safety/PII, Destructive-op confirmation, Resilience, Observability) | `src/` | ☐ |
@@ -36,23 +36,23 @@ Build a **data analysis chat agent** for non-technical retail executives that:
 
 ---
 
-## 2. Tech Stack (proposed)
+## 2. Tech Stack
 
 | Layer | Prototype | Production (HLD) | Why |
 |-------|-----------|------------------|-----|
 | Language | Python 3.11+ | Python 3.11+ | Requested; best ecosystem for LLM + data. |
 | Agent framework | **LangGraph** | LangGraph | Explicit state graph (good for retry loops & guardrail nodes), built-in **human-in-the-loop interrupts** (perfect for delete confirmation), checkpointing/memory, easy to add new tools. *Alternative considered: Google ADK.* |
-| LLM | **Gemini Flash** (latest available in AI Studio, e.g. `gemini-2.5-flash`) | Gemini on Vertex AI (Flash for routing/SQL, Pro for long reports) | Required/preferred by client; free tier; good tool calling; long context. |
+| LLM | **Gemini Flash** (latest available in AI Studio, e.g. `gemini-3.8-flash`) | Gemini on Vertex AI (3.8 Flash primary, 3.5 Flash-Lite fallback + cheap steps) | Required/preferred by client; free tier; good tool calling; long context. |
 | LLM SDK | `langchain-google-genai` / `google-genai` | Vertex AI SDK | Native Gemini support. |
 | Data warehouse | BigQuery public dataset via `google-cloud-bigquery` | BigQuery (authorized views + row-level security) | Required. |
 | SQL validation | `sqlglot` (AST parsing) | `sqlglot` + BQ IAM | Deterministic, non-LLM safety checks. |
 | PII masking | Column blocklist + regex/Presidio output scrubber | + Cloud DLP / Sensitive Data Protection, BQ policy tags | Defense in depth. |
-| Saved Reports store | SQLite | Firestore or Cloud SQL (Postgres) | Zero setup locally; managed in prod. |
-| Golden Bucket | Local folder of JSON trios + embeddings (Chroma or in-memory cosine) | GCS bucket + Vertex AI Vector Search / pgvector | RAG over expert trios. |
-| User memory / prefs | SQLite / JSON | Firestore | Per-user profile. |
-| Persona / prompts | YAML file hot-reloaded each turn | Firestore/GCS prompt registry + small admin UI | Edit without redeploy. |
+| Saved Reports store | SQLite | Cloud SQL (Postgres) | Zero setup locally; managed in prod. |
+| Golden Bucket | Local folder of JSON trios + embeddings (Chroma or in-memory cosine) | GCS bucket + pgvector (Cloud SQL) | RAG over expert trios. |
+| User memory / prefs | SQLite / JSON | Cloud SQL (Postgres) | Per-user profile. |
+| Persona / prompts | YAML file hot-reloaded each turn | Postgres `prompt_versions` registry + small admin UI | Edit without redeploy. |
 | Retries | `tenacity` | `tenacity` + circuit breaker | Backoff on 429/5xx. |
-| Observability | Structured JSONL logs + traces (`structlog`), optional Langfuse | Cloud Logging, Cloud Trace (OpenTelemetry), Cloud Monitoring, Langfuse/LangSmith | Debug every message & tool call. |
+| Observability | Structured JSONL logs + traces, optional Langfuse | Cloud Logging, Cloud Trace (OpenTelemetry), Cloud Monitoring, Langfuse | Debug every message & tool call. |
 | CLI | `rich` + `prompt_toolkit` (or `typer`) | — (Web/Slack UI later) | Nice tables/markdown in terminal. |
 | Tests | `pytest` | CI (GitHub Actions / Cloud Build) | |
 | Compute | Local | **Cloud Run** (agent API), Cloud Run Jobs / Pub/Sub workers (async jobs) | Serverless, autoscaling. |
@@ -80,48 +80,22 @@ Build a **data analysis chat agent** for non-technical retail executives that:
 
 ---
 
-## 4. High-Level Architecture (draft)
+## 4. High-Level Architecture
 
-```mermaid
-flowchart LR
-    U[Executive<br/>CLI / Web / Slack] -->|HTTPS + JWT| GW[API Gateway / IAP]
-    GW --> API[Agent Service<br/>Cloud Run - LangGraph]
+Full design: **[docs/architecture.md](docs/architecture.md)** (diagrams) and **[docs/technical_design.md](docs/technical_design.md)** (reasoning).
 
-    subgraph Agent["Agent Service (LangGraph graph)"]
-        IG[Input Guardrail<br/>scope + injection check] --> CTX[Context Builder<br/>persona + user prefs + golden trios + schema]
-        CTX --> PL[Planner / Router LLM]
-        PL -->|tool calls| TOOLS
-        subgraph TOOLS[Tool Registry]
-            T1[run_sql]
-            T2[describe_schema]
-            T3[search_golden_trios]
-            T4[save_report / list_reports]
-            T5[delete_reports<br/>HITL confirm]
-            T6[future: chart / email / web search]
-        end
-        TOOLS --> OG[Output Guardrail<br/>PII scrubber]
-    end
+- Production HLD on Google Cloud (Cloud Run, Vertex AI Gemini, BigQuery, Cloud SQL Postgres + pgvector, GCS, Pub/Sub, Memorystore, IAP, Model Armor, DLP, Cloud Logging/Trace/Monitoring, Langfuse)
+- Agent graph (LangGraph nodes: guards, tools, confirmation, fallback)
+- Sequence diagrams: analysis + SQL self-correction, delete confirmation, learning loop / Golden Bucket ingestion, persona update
+- Data storage & retention table, security layers, prototype vs. production mapping
 
-    T1 --> SQLV[SQL Validator<br/>sqlglot: SELECT-only, table allowlist,<br/>PII column block, row-level filter, LIMIT] --> BQ[(BigQuery<br/>thelook_ecommerce)]
-    T3 --> VS[(Vector Index<br/>Vertex AI Vector Search)]
-    VS --- GB[(Golden Bucket<br/>GCS trios)]
-    T4 & T5 --> RS[(Saved Reports<br/>Firestore)]
-    CTX --> PR[(Prompt / Persona Registry<br/>Firestore)]
-    CTX --> MEM[(User Memory<br/>Firestore)]
-    PL <--> LLM[Gemini<br/>Vertex AI]
-
-    API -.traces/logs/metrics.-> OBS[Cloud Logging / Trace / Monitoring<br/>+ Langfuse]
-    API -.events.-> PS[Pub/Sub] --> LW[Learning Worker<br/>Cloud Run Job]
-    LW --> GB
-    LW --> MEM
-    ADM[Admin UI<br/>non-developers] --> PR
-```
+> Design change vs. first draft: Firestore and Vertex AI Vector Search were replaced by a single **Cloud SQL Postgres + pgvector** store (transactions for reports/confirmations, LangGraph Postgres checkpointer, trio index in one place).
 
 **Tasks:**
-- ☐ Finalize the diagram (add async report/email worker, DLP, Secret Manager, CI/CD).
-- ☐ Add a **sequence diagram** for a normal question (with SQL self-correction loop).
-- ☐ Add a **sequence diagram** for the delete-confirmation flow.
-- ☐ Describe where each piece of data is stored, retention, and who can access it.
+- ☑ Production HLD diagram
+- ☑ Sequence diagrams (analysis + self-correction, delete confirmation, learning loop, persona)
+- ☑ Data storage, retention and access
+- ☐ Render-check all Mermaid diagrams (GitHub preview or mermaid.live)
 
 ---
 
@@ -247,7 +221,7 @@ Saved Reports library (SQLite): `reports(id, owner_id, conversation_id, title, c
 ### R8. Agility (Persona Management) — *design (+ easy prototype)*
 
 - Prompts split into layers: **core system prompt** (safety rules, versioned in code — not editable) + **persona/tone layer** (editable).
-- Persona stored in a **prompt registry** (Firestore/GCS) with versions, author, active flag, and rollback; edited through a simple admin UI (or Google Sheet/Doc sync).
+- Persona stored in a **prompt registry** (Postgres `prompt_versions`) with versions, author, active flag, and rollback; edited through a simple admin UI (or Google Sheet/Doc sync).
 - Agent fetches the active persona at each request (with short cache TTL) → **no redeploy**.
 - Optional: changes go through a quick eval run before activation.
 
@@ -332,7 +306,7 @@ ai-challange/
 | # | Milestone | Est. | Done |
 |---|-----------|------|------|
 | 0 | Send clarifying questions to OpsFleet (see §10); set up repo, venv, GCP auth, Gemini key; verify a BQ query works | 0.5 h | ☐ |
-| 1 | Design docs v1: HLD diagram, sequence diagrams, service choices | 2 h | ☐ |
+| 1 | Design docs v1: HLD diagram, sequence diagrams, service choices | 2 h | ☑ |
 | 2 | Core agent: LangGraph graph, Gemini client, `describe_schema`, `run_sql`, CLI loop with conversation memory | 2 h | ☐ |
 | 3 | Safety: SQL guard (sqlglot), PII column/output scrubbing, per-user scope, input guardrail + tests | 2 h | ☐ |
 | 4 | Resilience: SQL self-correction loop, retries/backoff/fallback, cost limits, error boundary + tests | 1 h | ☐ |

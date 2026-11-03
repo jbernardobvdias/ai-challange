@@ -1,0 +1,239 @@
+dataset: bigquery-public-data.thelook_ecommerce
+tables:
+  orders:
+    description: ''
+    columns:
+    - name: order_id
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: user_id
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: status
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: gender
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: created_at
+      type: TIMESTAMP
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: returned_at
+      type: TIMESTAMP
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: shipped_at
+      type: TIMESTAMP
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: delivered_at
+      type: TIMESTAMP
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: num_of_item
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+  order_items:
+    description: ''
+    columns:
+    - name: id
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: order_id
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: user_id
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: product_id
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: inventory_item_id
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: status
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: created_at
+      type: TIMESTAMP
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: shipped_at
+      type: TIMESTAMP
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: delivered_at
+      type: TIMESTAMP
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: returned_at
+      type: TIMESTAMP
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: sale_price
+      type: FLOAT
+      mode: NULLABLE
+      description: ''
+      pii: false
+  products:
+    description: ''
+    columns:
+    - name: id
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: cost
+      type: FLOAT
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: category
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: name
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: brand
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: retail_price
+      type: FLOAT
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: department
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: sku
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: distribution_center_id
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+  users:
+    description: ''
+    columns:
+    - name: id
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: first_name
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: true
+    - name: last_name
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: true
+    - name: email
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: true
+    - name: age
+      type: INTEGER
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: gender
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: state
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: street_address
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: true
+    - name: postal_code
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: true
+    - name: city
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: country
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: latitude
+      type: FLOAT
+      mode: NULLABLE
+      description: ''
+      pii: true
+    - name: longitude
+      type: FLOAT
+      mode: NULLABLE
+      description: ''
+      pii: true
+    - name: traffic_source
+      type: STRING
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: created_at
+      type: TIMESTAMP
+      mode: NULLABLE
+      description: ''
+      pii: false
+    - name: user_geom
+      type: GEOGRAPHY
+      mode: NULLABLE
+      description: ''
+      pii: true

@@ -46,11 +46,19 @@ def check_env() -> bool:
 
 def check_gemini() -> bool:
     print("2. Gemini API")
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
     try:
         from google import genai
+        from google.genai import types
 
-        client = genai.Client()  # reads GOOGLE_API_KEY
+        # The SDK has no request timeout by default and retries 5xx up to 5 times
+        # with backoff, which looks like a hang when the model is overloaded.
+        http_options = types.HttpOptions(
+            timeout=30_000,  # ms
+            retry_options=types.HttpRetryOptions(attempts=2),
+        )
+        client = genai.Client(http_options=http_options)  # reads GOOGLE_API_KEY
+        print(f"         calling {model} (30s timeout)...", flush=True)
         resp = client.models.generate_content(model=model, contents="Reply with the single word: OK")
         ok(f"{model} responded: {resp.text.strip()!r}")
         return True
