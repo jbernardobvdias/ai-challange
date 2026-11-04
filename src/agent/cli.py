@@ -12,10 +12,14 @@ from google.auth.exceptions import DefaultCredentialsError
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
+from langgraph.types import Command
+from rich import box
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
+from rich.table import Table
+from rich.text import Text
 
 from agent.app import build_agent
 from agent.config import ROOT, ConfigError, Settings
@@ -95,22 +99,34 @@ class ChatCLI:
             "configurable": {"thread_id": self.thread_id, "user_id": self.user.id},
             "recursion_limit": RECURSION_LIMIT,
         }
+        graph_input: dict | Command = {"messages": [HumanMessage(text)]}
         final: AIMessage | None = None
+        notified = False
         try:
-            with self.console.status("Thinking…") as status:
-                updates = self.agent.stream({"messages": [HumanMessage(text)]}, config, stream_mode="updates")
-                for update in updates:
-                    for node_output in update.values():
-                        for msg in (node_output or {}).get("messages", []):
-                            if isinstance(msg, AIMessage) and msg.tool_calls:
-                                for call in msg.tool_calls:
-                                    self._show_tool_call(call)
-                                    status.update(f"{_tool_label(call)}…")
-                            elif isinstance(msg, ToolMessage):
-                                self._show_tool_result(msg)
-                                status.update("Analysing results…")
-                            elif isinstance(msg, AIMessage):
-                                final = msg
+            while True:
+                confirmation = None
+                with self.console.status("Thinking…") as status:
+                    for update in self.agent.stream(graph_input, config, stream_mode="updates"):
+                        if "__interrupt__" in update:
+                            confirmation = update["__interrupt__"][0].value
+                            continue
+                        for node, output in update.items():
+                            for msg in (output or {}).get("messages", []):
+                                if isinstance(msg, AIMessage) and msg.tool_calls:
+                                    for call in msg.tool_calls:
+                                        self._show_tool_call(call)
+                                        status.update(f"{_tool_label(call)}…")
+                                elif isinstance(msg, ToolMessage):
+                                    self._show_tool_result(msg)
+                                    status.update("Analysing results…")
+                                elif isinstance(msg, AIMessage) and node == "confirm_delete":
+                                    self.console.print(f"\n{msg.text}", markup=False)
+                                    notified = True
+                                elif isinstance(msg, AIMessage):
+                                    final = msg
+                if confirmation is None:
+                    break
+                graph_input = Command(resume=self._ask_confirmation(confirmation))
         except KeyboardInterrupt:
             self.console.print("[dim]Cancelled. You can keep asking questions.[/]")
             return
@@ -124,6 +140,8 @@ class ChatCLI:
             ))
             return
 
+        if final is None and notified:
+            return
         answer = final.text if final else ""
         self.console.print()
         self.console.print(Markdown(answer or "_I couldn't produce an answer. Please try rephrasing._"))
@@ -131,13 +149,34 @@ class ChatCLI:
         if model and model != self.settings.model:
             self.console.print(f"[dim]Answered by the backup model ({model}).[/]")
 
+    def _ask_confirmation(self, confirmation: dict) -> str:
+        """Show exactly what would be deleted and return the user's answer."""
+        reports = confirmation["reports"]
+        table = Table(box=box.SIMPLE, show_edge=False)
+        table.add_column("ID", justify="right")
+        table.add_column("Title")
+        table.add_column("Created")
+        for report in reports:
+            table.add_row(str(report["id"]), Text(report["title"]), report["created_at"])
+
+        self.console.print()
+        if confirmation["reprompt"]:
+            self.console.print("[yellow]To delete, please type exactly: confirm[/]")
+        self.console.print(Panel(
+            table, title=f"Delete {len(reports)} report(s)?", title_align="left", border_style="yellow",
+        ))
+        try:
+            return self.session.prompt("Type 'confirm' to delete, or 'cancel' › ")
+        except (EOFError, KeyboardInterrupt):
+            return "cancel"
+
     def _show_tool_call(self, call: dict) -> None:
         self.console.print(f"[dim]▸ {_tool_label(call)}[/]")
         if self.verbose and call["name"] == "run_sql":
             self.console.print(Syntax(call["args"].get("sql", ""), "sql", theme="ansi_dark", word_wrap=True))
 
     def _show_tool_result(self, msg: ToolMessage) -> None:
-        if not self.verbose:
+        if not self.verbose or msg.name != "run_sql":
             return
         try:
             obs = json.loads(msg.content)
@@ -152,8 +191,16 @@ class ChatCLI:
 def _tool_label(call: dict) -> str:
     if call["name"] == "run_sql":
         return f"Querying: {call['args'].get('purpose') or 'running SQL'}"
-    if call["name"] == "describe_schema":
-        return "Looking up available data"
+    labels = {
+        "describe_schema": "Looking up available data",
+        "save_report": "Saving the report",
+        "list_reports": "Looking up your reports",
+        "get_report": "Opening the report",
+        "propose_delete": "Finding the reports to delete",
+        "restore_deleted_reports": "Restoring your reports",
+    }
+    if call["name"] in labels:
+        return labels[call["name"]]
     return f"Using {call['name']}"
 
 

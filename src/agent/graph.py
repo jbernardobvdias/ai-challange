@@ -1,15 +1,13 @@
 """LangGraph agent graph.
 
-    START -> input_guard -> agent <-> tools
-                 |            |         |
-              (blocked)       |    (budget spent or
-                 |            |     warehouse down)
-                 |            v         v
-                 |       output_guard <- give_up
-                 v            |
-                END <---------+
-
-The delete confirmation node from docs/architecture.md §3 is added in a later step.
+    START -> input_guard -> agent <-> tools --(delete proposed)--> confirm_delete
+                 |            |         |                            |    |    |
+              (blocked)       |    (budget spent or       (confirmed)|    |    |(something else:
+                 |            |     warehouse down)                  v    |    | back to input_guard
+                 |            v         v                 execute_delete  |    | as a new request)
+                 |       output_guard <- give_up                     |    |(cancelled)
+                 v            |                                      v    v
+                END <---------+------------------------------------ END  END
 """
 import logging
 from collections.abc import Callable
@@ -21,6 +19,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.types import Command, interrupt
 
 from agent.resilience import (
     StopReason,
@@ -32,6 +31,8 @@ from agent.resilience import (
 )
 from agent.safety.input_guard import REFUSALS, InputGuard
 from agent.safety.pii import scrub_text
+from agent.storage.reports_store import ReportStore
+from agent.tools.reports import UNDO_WINDOW, pending_delete
 from agent.users import User, UserDirectory
 
 logger = logging.getLogger(__name__)
@@ -57,9 +58,15 @@ PARTIAL_ANSWER_INSTRUCTION = """
 You cannot run more queries for this question. Answer using only the results already obtained in
 this conversation. Say clearly which parts of the question you could not answer."""
 
+_CONFIRM_WORDS = {"confirm"}
+_CANCEL_WORDS = {"no", "n", "nope", "cancel", "stop", "abort", "never mind", "nevermind", "don't", "do not"}
+# Sounds like agreement, but a destructive action needs the exact word: ask again rather than guess.
+_UNCLEAR_WORDS = {"", "yes", "y", "yep", "yeah", "ok", "okay", "sure", "delete", "delete them", "do it", "go ahead", "proceed"}
+
 
 class AgentState(MessagesState):
     blocked: bool
+    approved_delete: list[int]
 
 
 def _recent_history(messages: list[AnyMessage]) -> str:
@@ -74,6 +81,7 @@ def build_graph(
     input_guard: InputGuard,
     users: UserDirectory,
     checkpointer: BaseCheckpointSaver,
+    reports: ReportStore,
     summary_llm: Runnable | None = None,
     limits: TurnLimits = TurnLimits(),
 ) -> CompiledStateGraph:
@@ -97,7 +105,49 @@ def build_graph(
             return {"messages": [AIMessage(MODELS_DOWN_MESSAGE)]}
 
     def after_tools(state: AgentState) -> str:
+        if pending_delete(state["messages"]):
+            return "confirm_delete"
         return "give_up" if stop_reason(current_turn(state["messages"]), limits) else "agent"
+
+    def confirm_delete(state: AgentState, config: RunnableConfig) -> Command:
+        """Pause until the user decides. Re-runs from the top on each answer, so this node changes
+        nothing except by its returned Command."""
+        settings = config["configurable"]
+        proposal = pending_delete(state["messages"])
+        reprompt = False
+        while True:
+            answer = interrupt({**proposal, "reprompt": reprompt})
+            word = str(answer).strip().lower().rstrip(".!")
+            if word not in _UNCLEAR_WORDS:
+                break
+            reprompt = True
+
+        ids = [r["id"] for r in proposal["reports"]]
+        if word in _CONFIRM_WORDS:
+            if reports.now().isoformat() > proposal["expires_at"]:
+                reports.audit(settings["user_id"], "delete_expired", ids, settings["thread_id"])
+                message = "That confirmation has expired, so nothing was deleted. Ask me again if you still want to."
+                return Command(update={"messages": [AIMessage(message)]}, goto=END)
+            return Command(update={"approved_delete": ids}, goto="execute_delete")
+
+        reports.audit(settings["user_id"], "delete_cancelled", ids, settings["thread_id"])
+        cancelled = AIMessage("Deletion cancelled. Nothing was deleted.")
+        if word in _CANCEL_WORDS:
+            return Command(update={"messages": [cancelled]}, goto=END)
+        # Anything else is a new request, screened like any other message.
+        return Command(update={"messages": [cancelled, HumanMessage(str(answer))]}, goto="input_guard")
+
+    def execute_delete(state: AgentState, config: RunnableConfig) -> dict:
+        """The only place reports are deleted: only the IDs the user saw, only if they own them."""
+        settings = config["configurable"]
+        deleted = reports.soft_delete(settings["user_id"], state["approved_delete"], settings["thread_id"])
+        if not deleted:
+            message = "Nothing was deleted: those reports no longer exist."
+        else:
+            minutes = int(UNDO_WINDOW.total_seconds() // 60)
+            titles = "\n".join(f"- {r.title}" for r in deleted)
+            message = f"Deleted {len(deleted)} report(s):\n{titles}\n\nSay \"undo\" within {minutes} minutes to restore them."
+        return {"approved_delete": [], "messages": [AIMessage(message)]}
 
     def give_up(state: AgentState, config: RunnableConfig) -> dict:
         turn = current_turn(state["messages"])
@@ -126,12 +176,15 @@ def build_graph(
     graph.add_node("agent", agent)
     graph.add_node("tools", ToolNode(tools))
     graph.add_node("give_up", give_up)
+    graph.add_node("confirm_delete", confirm_delete, destinations=("execute_delete", "input_guard", END))
+    graph.add_node("execute_delete", execute_delete)
     graph.add_node("output_guard", check_output)
 
     graph.add_edge(START, "input_guard")
     graph.add_conditional_edges("input_guard", lambda s: END if s["blocked"] else "agent")
     graph.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: "output_guard"})
-    graph.add_conditional_edges("tools", after_tools, ["agent", "give_up"])
+    graph.add_conditional_edges("tools", after_tools, ["agent", "give_up", "confirm_delete"])
+    graph.add_edge("execute_delete", END)
     graph.add_edge("give_up", "output_guard")
     graph.add_edge("output_guard", END)
     return graph.compile(checkpointer=checkpointer)

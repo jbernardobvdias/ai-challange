@@ -152,13 +152,15 @@ flowchart TD
     IG -- "blocked" --> REFUSE["<b>refuse</b><br/>polite, scoped message"]
     IG -- "ok" --> AGENT["agent (Gemini)<br/>plan · choose tools · synthesize"]
 
-    AGENT -- "tool calls" --> TOOLS["<b>tools</b><br/>describe_schema · run_sql<br/>search_golden_trios · save_report<br/>list_reports · propose_delete"]
+    AGENT -- "tool calls" --> TOOLS["<b>tools</b><br/>describe_schema · run_sql<br/>search_golden_trios · save_report<br/>list_reports · get_report · propose_delete<br/>restore_deleted_reports"]
     TOOLS -- "observation<br/>(rows / structured error)" --> AGENT
 
     TOOLS -- "propose_delete returned<br/>pending action" --> CONFIRM["<b>confirm_delete</b><br/>interrupt() → show exact list<br/>wait for user decision"]
-    CONFIRM -- "confirmed (token matches)" --> EXEC["<b>execute_delete</b><br/>owner check · soft delete · audit"]
-    CONFIRM -- "cancelled / other input" --> AGENT
-    EXEC --> AGENT
+    CONFIRM -- "exactly 'confirm', not expired" --> EXEC["<b>execute_delete</b><br/>owner check · soft delete · audit"]
+    CONFIRM -- "vague agreement" --> CONFIRM
+    CONFIRM -- "cancelled" --> OUT
+    CONFIRM -- "asks something else<br/>(deletion cancelled)" --> IG
+    EXEC --> OUT
 
     AGENT -- "budget exceeded /<br/>max SQL retries" --> GIVEUP["<b>graceful_fallback</b><br/>explain what failed, suggest next step"]
     AGENT -- "final answer" --> OG["<b>output_guard</b><br/>PII scrub · format check"]
@@ -169,7 +171,7 @@ flowchart TD
 ```
 
 Key design points:
-- **The LLM can never execute a delete.** It can only *propose* one; execution happens in a deterministic node after a human confirmation bound to the exact list of report IDs.
+- **The LLM can never execute a delete.** It can only *propose* one; execution happens in a deterministic node after a human confirmation of the exact list of report IDs.
 - **Every SQL statement passes through the SQL Guard inside `run_sql`**, regardless of what the LLM wrote.
 - **Budgets are derived from the turn's messages**: consecutive SQL failures, LLM calls and tokens. Exceeding them routes to `graceful_fallback` instead of looping.
 - New capabilities (charts, email, web search) are **added as tools** in the registry; the graph does not change.
@@ -240,28 +242,39 @@ sequenceDiagram
     LLM-->>API: tool_call propose_delete(filter = {text: "Client X"})
     API->>RS: SELECT ... WHERE owner_id = :me AND deleted_at IS NULL AND matches filter
     RS-->>API: 3 reports (ids 12, 17, 31)
-    API->>API: create pending_action {ids, sha256(ids), expires_at = now + 5 min}
-    API-->>U: interrupt: table of 3 reports + "Type 'confirm' to delete these 3 reports"
-    Note over U,API: Graph is paused and checkpointed. The user may also ask something else.
+    API->>API: tool result records the exact IDs and expires_at = now + 5 min
+    API-->>U: interrupt: table of 3 reports + "Type 'confirm' to delete, or 'cancel'"
+    Note over U,API: Graph is paused and checkpointed. No model call happens until the user answers.
 
-    alt User confirms
+    alt User types "confirm"
         U->>API: "confirm"
-        API->>API: verify token, TTL, ids unchanged
-        API->>RS: re-check ownership; UPDATE SET deleted_at = now() WHERE id IN (12, 17, 31)
-        API->>AU: insert {user, action: delete, ids, conversation_id, trace_id}
-        API-->>U: "Deleted 3 reports. Type 'undo' within 10 min to restore."
-    else User cancels or sends anything else
-        U->>API: "no, actually show me Q1 revenue"
-        API->>API: discard pending_action
-        API-->>U: "Deletion cancelled." + continues with the new request
+        API->>API: check expiry
+        API->>RS: UPDATE SET deleted_at = now() WHERE owner_id = :me AND id IN (12, 17, 31)
+        API->>AU: insert {user, action: delete, ids, conversation_id} in the same transaction
+        API-->>U: "Deleted 3 reports. Say 'undo' within 10 minutes to restore them."
+    else Vague agreement ("yes", "ok", "go ahead")
+        U->>API: "yes"
+        API-->>U: same table + "To delete, please type exactly: confirm"
+    else User types "cancel" or "no"
+        U->>API: "cancel"
+        API->>AU: insert {action: delete_cancelled}
+        API-->>U: "Deletion cancelled. Nothing was deleted."
+    else User asks something else
+        U->>API: "Actually, show me Q1 revenue"
+        API->>AU: insert {action: delete_cancelled}
+        API-->>U: "Deletion cancelled. Nothing was deleted."
+        API->>API: the message continues as a new request, starting at input_guard
     end
 ```
 
 Rules enforced in code:
-- Ownership filter `owner_id = current_user` is applied in SQL by the tool — the LLM cannot widen it.
-- Zero matches → no confirmation step, just an informative message.
-- Only the **exact IDs shown** are deleted; if the set changed (e.g. a report was added), the confirmation is invalidated and re-proposed.
-- Soft delete + audit log → reversible and traceable. A scheduled job hard-deletes after the retention window.
+- **The model has no tool that deletes.** `propose_delete` only finds what would be deleted; `execute_delete` is a plain graph node reached only after the user's exact confirmation.
+- The owner comes from the signed-in user, and `owner_id = current_user` is applied in SQL by the store, so the model cannot widen it.
+- Zero matches → no confirmation step, just an informative message. A request with no filter is refused rather than treated as "everything".
+- Only the **exact IDs shown** are deleted. They come from the tool result stored in the checkpoint, so reports added after the proposal are unaffected, and reports already gone are reported honestly.
+- Confirmation expires after 5 minutes. A confirmation that isn't exactly `confirm` never deletes.
+- Soft delete + audit log → reversible and traceable. In production, a scheduled job hard-deletes after the retention window (not in the prototype).
+- Confirming and cancelling use no model call, so the outcome can't be misreported by the model and costs nothing.
 
 ---
 
@@ -383,8 +396,8 @@ The prototype keeps the same graph, tools and guard logic, and swaps managed ser
 | Input screening | Model Armor + classifier | Gemini classifier + rules |
 | PII column protection | Policy tags + SQL Guard | SQL Guard + result filter |
 | Output PII check | DLP | Regex scrubber |
-| Conversation state | Postgres checkpointer | LangGraph SQLite / in-memory checkpointer |
-| Saved reports, audit log | Postgres | SQLite (`data/app.db`) |
+| Conversation state | Postgres checkpointer | In-memory checkpointer (a conversation ends when the CLI exits; saved reports remain) |
+| Saved reports, audit log | Postgres | SQLite (`data/app.db`, created on first run) |
 | Golden trios | GCS + pgvector | `data/golden_trios/*.json` + in-memory similarity *(stretch)* |
 | Persona | `prompt_versions` + admin console | `config/persona.yaml`, re-read every turn *(stretch)* |
 | Observability | Cloud Logging/Trace/Monitoring + Langfuse | JSONL logs & traces in `logs/`, `/trace` and `/stats` CLI commands |

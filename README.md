@@ -139,19 +139,24 @@ Defense in depth — **never rely on the LLM alone**:
 
 ### R3. High-Stakes Oversight (Destructive Ops) — *must implement*
 
-Saved Reports library (SQLite): `reports(id, owner_id, conversation_id, title, content, tags, created_at, deleted_at)`.
+Saved Reports library in SQLite (`data/app.db`): `reports` and an append-only `audit_log`. Users can only see and delete their own reports.
 
-**Two-phase delete flow:**
-1. **Resolve (dry run):** LLM calls `delete_reports(filter)` → tool does *not* delete; it finds matching reports **owned by the current user only** (e.g. "mentioning Client X" → text search; "made in this conversation" → `conversation_id`).
-2. **Preview & confirm:** Graph **interrupts** (LangGraph `interrupt`) and the CLI shows a table of exactly what will be deleted + a confirmation prompt (e.g. type `yes` / `confirm 3`). A confirmation token binds the exact list of IDs and expires (TTL).
-3. **Execute:** Only the confirmed IDs are deleted (soft-delete + audit log). Anything else (`no`, new question, timeout) cancels safely and the conversation continues normally.
-4. Ownership check is enforced in code, not by the LLM. Zero matches → no confirmation, just inform.
-5. (Nice) `undo` within a short window thanks to soft-delete.
+**Propose → confirm → execute:**
+1. **Propose:** the model calls `propose_delete(search / this_conversation / report_ids / all_reports)`. It deletes nothing, and the model has no tool that does. Owner and conversation come from the session.
+2. **Confirm:** the graph pauses (LangGraph `interrupt`) and the CLI shows the exact list:
+   - `confirm` → deletes;
+   - `yes`, `ok`, `go ahead` → asks again, deleting nothing;
+   - `cancel`, `no`, Ctrl-C → cancels;
+   - anything else → cancels, then treats it as a new request, so the conversation continues normally.
+3. **Execute:** a plain graph node soft-deletes only the IDs shown, if the user still owns them, and writes the audit entry in the same transaction.
+4. **Undo:** saying "undo" within 10 minutes restores the latest deletion.
+
+Also: zero matches skips confirmation, a request with no filter is refused, and a confirmation expires after 5 minutes.
 
 **Tasks:**
-- ☐ `reports_store.py` (CRUD, ownership checks, soft delete, audit log).
-- ☐ Tools: `save_report`, `list_reports`, `delete_reports` (with interrupt).
-- ☐ Tests: can't delete other users' reports; cancel flow; token mismatch/expired.
+- ☑ `storage/reports_store.py` (ownership checks, soft delete, audit log).
+- ☑ Tools: `save_report`, `list_reports`, `get_report`, `propose_delete`, `restore_deleted_reports`, plus `confirm_delete` and `execute_delete` graph nodes.
+- ☑ Tests: other users' reports, cancel flow, vague answers, expiry, reports added after proposal. Verified live through the CLI.
 
 ### R4. Continuous Improvement (Learning Loop) — *design (+ optional light prototype)*
 
@@ -245,7 +250,7 @@ Full failure table: [docs/technical_design.md §7](docs/technical_design.md#7-er
 | Multi-step analysis | "Why are users in state X underspending vs Y?" | planner → several queries → synthesis |
 | Reports | "Create a Q1 report with action items for Q2" | report template (summary, KPIs, insights, action items) → `save_report` |
 | Discussion | follow-ups on previous answers | conversation memory (LangGraph checkpointer) |
-| Report library | list / delete reports | `list_reports`, `delete_reports` (confirm) |
+| Report library | save / list / read / delete / undo | `save_report`, `list_reports`, `get_report`, `propose_delete` (confirm), `restore_deleted_reports` |
 
 ---
 
@@ -281,14 +286,14 @@ ai-challange/
 │   ├── warehouse.py           # BigQuery limits, retries, cache
 │   ├── tools/
 │   │   ├── sql.py             # run_sql, describe_schema
-│   │   ├── reports.py         # save/list/delete reports
+│   │   ├── reports.py         # save/list/read/restore, propose_delete
 │   │   └── golden.py          # (stretch) search_golden_trios
 │   ├── safety/
 │   │   ├── sql_guard.py       # sqlglot validation + scope rewrite
 │   │   ├── pii.py             # column filter + text scrubber
 │   │   └── input_guard.py     # scope / injection classifier
 │   ├── storage/
-│   │   └── reports_store.py   # SQLite
+│   │   └── reports_store.py   # SQLite: reports + audit log
 │   └── observability.py       # logging, tracing, metrics
 ├── evals/                     # (stretch) eval questions + runner
 └── tests/                     # pytest unit tests
@@ -323,7 +328,7 @@ ai-challange/
 | 2 | Core agent: LangGraph graph, Gemini client, `describe_schema`, `run_sql`, CLI loop with conversation memory | 2 h | ☑ |
 | 3 | Safety: SQL guard (sqlglot), PII column/output scrubbing, per-user scope, input guardrail + tests | 2 h | ☑ |
 | 4 | Resilience: SQL self-correction loop, retries/backoff/fallback, cost limits, error boundary + tests | 1 h | ☑ |
-| 5 | Saved reports + delete confirmation flow (interrupt, ownership, audit) + tests | 1.5 h | ☐ |
+| 5 | Saved reports + delete confirmation flow (interrupt, ownership, audit) + tests | 1.5 h | ☑ |
 | 6 | Observability: structured logs, traces, `/trace`, `/stats` | 1 h | ☐ |
 | 7 | Stretch: persona hot-reload, golden-trio RAG, preferences memory, small eval set | 1–2 h | ☐ |
 | 8 | Final docs: requirements write-up, setup, example run, polish, publish to GitHub | 1 h | ☐ |

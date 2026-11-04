@@ -24,6 +24,7 @@ class Settings:
     query_timeout_s: float
     max_query_bytes: int
     max_result_rows: int
+    db_path: Path
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -45,4 +46,5 @@ class Settings:
             query_timeout_s=float(os.getenv("QUERY_TIMEOUT_S", "30")),
             max_query_bytes=int(os.getenv("MAX_QUERY_BYTES", str(10**9))),
             max_result_rows=int(os.getenv("MAX_RESULT_ROWS", "50")),
+            db_path=Path(os.getenv("APP_DB_PATH", ROOT / "data" / "app.db")),
         )

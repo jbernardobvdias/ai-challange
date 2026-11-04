@@ -1,5 +1,7 @@
 """The graph's safety wiring, using a scripted model instead of Gemini."""
 import json
+import tempfile
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -15,6 +17,7 @@ from agent.resilience import TurnLimits
 from agent.safety.input_guard import Classification, InputGuard
 from agent.safety.sql_guard import SqlGuard
 from agent.schema import Schema
+from agent.storage.reports_store import ReportStore
 from agent.tools.sql import make_sql_tools
 from agent.users import UserDirectory
 from agent.warehouse import QueryTooExpensive, WarehouseUnavailable
@@ -44,12 +47,17 @@ def sql_call(sql):
     return AIMessage("", tool_calls=[{"name": "run_sql", "args": {"sql": sql, "purpose": "x"}, "id": "c1"}])
 
 
+def temp_store():
+    return ReportStore(Path(tempfile.mkdtemp()) / "test.db")
+
+
 def make_agent(llm, runner=None, category="allowed"):
     schema, users = Schema(), UserDirectory()
     tools = make_sql_tools(runner or RecordingRunner(), schema, SqlGuard(schema), users, 50)
     guard = InputGuard(RunnableLambda(lambda _: Classification(category=category)))
     return build_graph(
-        RunnableLambda(llm.invoke), tools, lambda u: build_system_prompt(schema, u), guard, users, InMemorySaver()
+        RunnableLambda(llm.invoke), tools, lambda u: build_system_prompt(schema, u), guard, users, InMemorySaver(),
+        temp_store(),
     )
 
 
@@ -138,7 +146,7 @@ def make_resilient_agent(llm, runner, summary=None, **graph_kwargs):
     guard = InputGuard(RunnableLambda(lambda _: Classification(category="allowed")))
     return build_graph(
         RunnableLambda(llm.invoke), tools, lambda u: build_system_prompt(schema, u), guard, users, InMemorySaver(),
-        summary_llm=summary, **graph_kwargs,
+        temp_store(), summary_llm=summary, **graph_kwargs,
     )
 
 

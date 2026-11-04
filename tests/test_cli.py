@@ -2,6 +2,7 @@ import io
 
 import pytest
 from langchain_core.messages import AIMessage
+from langgraph.types import Interrupt
 from rich.console import Console
 
 from agent import cli
@@ -68,3 +69,54 @@ def test_primary_model_is_not_mentioned(chat):
     instance = chat(reply_from("primary-model"))
     instance._turn("hi")
     assert "backup" not in output(instance)
+
+
+CONFIRMATION = {
+    "reports": [{"id": 1, "title": "[red]Sneaky[/red] title", "created_at": "2026-11-04"}],
+    "expires_at": "2026-11-04T00:05:00+00:00",
+    "reprompt": False,
+}
+
+
+class FakeSession:
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+
+    def prompt(self, _):
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), EOFError()])
+def test_leaving_the_confirmation_prompt_means_cancel(chat, interruption):
+    instance = chat(lambda: iter(()))
+    instance.session = FakeSession(interruption)
+    assert instance._ask_confirmation(CONFIRMATION) == "cancel"
+
+
+def test_report_titles_are_shown_literally(chat):
+    instance = chat(lambda: iter(()))
+    instance.session = FakeSession("cancel")
+    instance._ask_confirmation(CONFIRMATION)
+    assert "[red]Sneaky[/red] title" in output(instance)
+
+
+def test_turn_pauses_for_confirmation_and_resumes_with_the_answer(chat):
+    inputs = []
+
+    class PausingAgent:
+        def stream(self, graph_input, *_, **__):
+            inputs.append(graph_input)
+            if len(inputs) == 1:
+                yield {"__interrupt__": (Interrupt(value=CONFIRMATION),)}
+            else:
+                yield {"execute_delete": {"messages": [AIMessage("Deleted 1 report(s).")]}}
+
+    instance = chat(lambda: iter(()))
+    instance.agent = PausingAgent()
+    instance.session = FakeSession("confirm")
+    instance._turn("Delete it")
+    assert inputs[1].resume == "confirm"
+    assert "Deleted 1 report(s)." in output(instance)
