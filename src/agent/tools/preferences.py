@@ -9,6 +9,7 @@ from agent.storage.profiles import Depth, ProfileStore, ResponseFormat
 
 
 def make_preference_tools(profiles: ProfileStore) -> list[BaseTool]:
+    """Tools for remembering and forgetting the user's preferences."""
 
     @tool
     def remember_preference(

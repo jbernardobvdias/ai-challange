@@ -10,14 +10,19 @@ from agent.config import CONFIG_DIR
 
 @dataclass(frozen=True)
 class Column:
+    """One column of a table."""
+
     name: str
     type: str
     description: str
     pii: bool
+    pseudonymous: bool = False  # hashed by the SQL guard before leaving BigQuery
 
 
 @dataclass(frozen=True)
 class Table:
+    """One table of the dataset."""
+
     name: str
     description: str
     columns: tuple[Column, ...]
@@ -28,6 +33,8 @@ class Table:
 
 
 class Schema:
+    """The allowed tables, and which columns are sensitive."""
+
     def __init__(self, path: Path = CONFIG_DIR / "schema.yaml") -> None:
         raw = yaml.safe_load(path.read_text())
         self.dataset: str = raw["dataset"]
@@ -35,7 +42,7 @@ class Schema:
             name: Table(
                 name=name,
                 description=t.get("description", ""),
-                columns=tuple(Column(c["name"], c["type"], c.get("description", ""), c["pii"])
+                columns=tuple(Column(c["name"], c["type"], c.get("description", ""), c["pii"], c.get("pseudonymous", False))
                               for c in t["columns"]),
             )
             for name, t in raw["tables"].items()

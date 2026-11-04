@@ -11,7 +11,7 @@ Companion to [architecture.md](architecture.md) (diagrams and flows). This docum
 6. [Data flow summary](#6-data-flow-summary)
 7. [Error handling & fallback strategies](#7-error-handling--fallback-strategies)
 8. [Extensibility](#8-extensibility)
-9. [Scaling & cost](#9-scaling--cost)
+9. [Scaling, security & cost](#9-scaling-security--cost)
 10. [Observability](#10-observability)
 
 ---
@@ -84,7 +84,7 @@ Alternatives considered:
 - **Plain `google-genai` SDK with a hand-written loop** — minimal dependencies, but we would re-implement checkpointing, interrupts and state management.
 - **CrewAI / multi-agent frameworks** — more abstraction than needed; a single agent with well-designed tools is easier to secure and debug.
 
-**My experience with LangGraph:** _TODO — describe your level of experience (e.g. projects built, how long you have used it)._
+**My experience with LangGraph:** — I have been using langgraph for around 2,5 years now almost every day.
 
 ---
 
@@ -109,12 +109,12 @@ Detailed sequence diagrams are in [architecture.md §4–7](architecture.md#4-fl
 | SQL rejected by the guard (PII column, DML, unknown table) | SQL Guard | Structured error + hint returned to the model as a tool observation; counts toward the failure limit. | Nothing (internal), unless the request itself is disallowed → polite refusal. |
 | BigQuery syntax / semantic error | `BadRequest` from the dry run, which is free | Error message returned to the model, which already has the schema; **stops after 3 consecutive SQL failures**. No retry of the same SQL. | Final answer, or a clear explanation after the limit. |
 | Empty result | 0 rows, or an aggregate returning only NULLs | Hint telling the model to check filters and date range, plus the user's scope; counts toward the failure limit, so it cannot loop. | "No data" stated honestly, or an explanation of the access limit. |
-| Query too expensive | Dry-run bytes above the cap (default 1 GB) | Not executed; model asked to filter or aggregate. `maximum_bytes_billed` is a second cap enforced by BigQuery itself. | Nothing, or a request to narrow the question. |
+| Query too expensive or slow | Dry-run bytes above the cap (default 1 GB), or still running after 30 s | Over the cap: not executed. Too slow: job cancelled, not retried. Either way the model is asked to filter or aggregate. `maximum_bytes_billed` is a second cap enforced by BigQuery itself. | Nothing, or a request to narrow the question. |
 | Gemini overloaded / timed out | SDK error / timeout | Primary gets one 30 s attempt, then the **fallback model** (2 attempts, 60 s). **Circuit breaker**: after 2 consecutive failures the primary is skipped for 60 s, so users don't each wait for its timeout. | Slight delay; a note saying the backup model answered. |
-| Gemini quota exhausted | `429` with `retryDelay` | Circuit opens immediately for the delay Google states, which can be hours on the free tier. | As above. |
+| Gemini quota exhausted | `429` with `retryDelay` | Requests are paced to stay under the limit (4 s apart; measured free-tier limit 15 per minute). A short delay on the last-resort model is waited out once. Otherwise the circuit opens for the delay Google states, which can be hours for daily limits. | A short wait, or as above. |
 | All models down | Every link in the chain fails or is open | Canned message without crashing; conversation preserved. | "I can't reach the AI service right now…" |
 | Input classifier down | Same breaker mechanism | Skipped for 120 s after 2 failures; rules, the SQL guard and output filters keep working. | Nothing. |
-| BigQuery unavailable / timeout | Client error / timeout | One retry with exponential backoff and jitter, 30 s timeout, timed-out jobs cancelled; circuit breaker; recent identical queries served from a 10-minute cache. Credential or permission errors take the same path, since the model can't fix them. | Partial answer if some queries succeeded, otherwise "The data warehouse is unavailable right now…" |
+| BigQuery unavailable | Client error | One retry with exponential backoff and jitter; circuit breaker; recent identical queries served from a 10-minute cache. Credential or permission errors take the same path, since the model can't fix them. | Partial answer if some queries succeeded, otherwise "The data warehouse is unavailable right now…" |
 | Budget exhausted (8 LLM calls or 150k tokens per turn) | Counted from the turn's messages | Stop the loop; one final call without tools summarises what was found. | Partial answer + what is missing, or a request to split the question. |
 | Turn cancelled or crashed mid-tool-call | Tool call without a result in the history | Open tool calls are closed before the next model call, since Gemini would otherwise reject the conversation permanently. | Ctrl-C: "Cancelled". Crash: friendly message with a reference ID (details in `logs/agent.log`). |
 | Async worker failure *(design only)* | Pub/Sub delivery failure | Automatic redelivery; dead-letter topic + alert after N attempts. User path unaffected. | Nothing. |
@@ -137,11 +137,30 @@ Tools with side effects outside the system (email, deletion) reuse the same **pr
 
 ---
 
-## 9. Scaling & cost
+## 9. Scaling, security & cost
 
-- `agent-api` is stateless; Cloud Run scales horizontally on concurrent requests. Conversation state is in Postgres, so any instance can serve any turn.
-- The main cost drivers are LLM tokens and BigQuery bytes scanned, both capped per turn and tracked per user in metrics.
-- BigQuery: aggregation queries over `thelook_ecommerce` scan megabytes, well within the free tier; production tables would use partitioning/clustering on `created_at` and the guard would require a date filter on large tables.
+**Scaling.** `agent-api` is stateless, and Cloud Run scales it on concurrent requests. Conversation state is in Postgres, so any instance can serve any turn. BigQuery queries over `thelook_ecommerce` scan megabytes. Production tables would use partitioning and clustering on `created_at`, and the guard could require a date filter on large tables.
+
+**Security.**
+- *Least privilege:* `agent-api` runs as its own service account, with only BigQuery Job User on the project and Data Viewer on authorized views. It has no access to PII policy tags and no write access to the warehouse. Each worker has its own account.
+- *Secrets:* Secret Manager, mounted into Cloud Run. No key files.
+- *Network:* only the load balancer is public. Cloud SQL and Memorystore use private IP through a VPC connector.
+
+**Multi-tenancy.** Every operational table carries `owner_id` or `user_id`, and queries filter on the signed-in identity. Data scope comes from identity-provider groups. A second client organisation would be a separate Google Cloud project with its own warehouse views and prompt registry, rather than shared tables, which keeps isolation simple to prove.
+
+**Cost estimate.** An order of magnitude, for 50 executives asking 10 questions each per working day (about 11,000 turns a month). **Prices are illustrative and must be checked against current price lists.**
+
+| Item | Basis | Rough monthly cost |
+|------|-------|--------------------|
+| Gemini | Measured: about 7,000–12,000 tokens per turn. So about 130M tokens, at an assumed blended $0.50 per million. | $65 |
+| BigQuery | Measured: 20–30 MB **billed** per query, since BigQuery bills at least 10 MB per table referenced, even though only about 8 MB is scanned. About 3 queries per turn gives about 800 GB, just within the 1 TB free tier. | $0, or a few dollars above it |
+| Cloud Run | Mostly idle, as it waits on I/O | $20–50 |
+| Cloud SQL, small instance with high availability | | $100–150 |
+| Memorystore, basic tier | | $40 |
+| Logging, Trace, Pub/Sub, Storage | Low volume | $10–30 |
+| **Total** | | **About $250–350** |
+
+Model tokens are the only cost that grows quickly with usage, which is why they are limited per turn and reported in `/stats`. Replacing Memorystore and using scale-to-zero would lower the fixed cost for a small pilot.
 
 ---
 
@@ -153,11 +172,11 @@ Tools with side effects outside the system (email, deletion) reuse the same **pr
 |----------|---------|
 | Turn | `trace_id`, session, user, question, outcome, latency, time waiting for the user, tokens |
 | Each model call | model, graph node, messages sent, last input, output, tool calls with arguments, tokens, finish reason, latency, error. The system prompt is stored as a hash, which identifies the version without repeating it. |
-| Each tool call | arguments (the SQL), full observation (rows or structured error), status, latency |
+| Each tool call | arguments (the SQL), full observation (rows or structured error), status, latency. BigQuery job ID and bytes billed are recorded as an event. |
 | Each graph node | latency and status, including when paused for confirmation |
 | Domain events | input check verdict, SQL guard rejection and code, model failure and kind, fallback used, circuit opened, model skipped, BigQuery bytes and cache hit, BigQuery retry, PII scrubbed, turn stopped and why, delete proposed, executed, cancelled or expired |
 
-**How it is captured.** One LangChain callback handler records model, tool and node spans, so instrumentation isn't scattered through the code. Domain events use a single `emit()` function, which adds to the current trace (via a context variable, which also reaches tool threads) and writes a log line.
+**How it is captured.** One LangChain callback handler records model, tool and node spans, so instrumentation isn't scattered through the code. Domain events use a single `emit()` function, which adds to the current trace (via a context variable, which also reaches tool threads) and writes a log line carrying the trace, session and user IDs. Blocked attempts are logged at WARNING level as security events. `LOG_LEVEL` sets the level.
 
 **Two guarantees, both tested:**
 - *No personal data at rest:* every string is scrubbed when a trace or log line is written, including the user's question and raw model output from before the output guard.
@@ -171,10 +190,10 @@ All metrics are computed from traces (`summarize()`), so there is one source of 
 |-------|--------|----------------|----------------|
 | Reliability | Outcome per turn: `answered`, `refused`, `gave_up:<reason>`, `models_down`, `error`, `cancelled` | The headline failure taxonomy | `error` + `models_down` > 2% over 15 min |
 | Reliability | `gave_up` rate by reason | The agent is failing users without crashing | > 5% over 1 h |
-| Latency | p50 / p95 per turn; time by node, in model calls and in SQL | Shows where slow answers spend their time | p95 > 60 s over 15 min |
+| Latency | p50 / p95 per turn, per model call and per SQL call; time by node | Shows where slow answers spend their time | p95 > 60 s over 15 min |
 | Models | Failures by kind, fallback answers, circuits opened | Provider health and degraded quality | Fallback share > 25% over 15 min |
-| Cost | Tokens by turn and model, BigQuery bytes scanned, cache hits | Cost per answer | Daily spend above budget |
-| SQL quality | First-try success, status counts | Text-to-SQL quality; a drop often follows a prompt or schema change | First-try success < 70% over 1 day |
+| Cost | Tokens and BigQuery bytes per turn, by model; cache hits | The two billed units behind cost per answer | Daily spend above budget |
+| SQL quality | First-try success, self-correction success, attempts per turn, empty-result rate | Text-to-SQL quality; a drop often follows a prompt or schema change | First-try success < 70% over 1 day |
 | Safety | Input blocked by category, classifier unavailable, SQL rejected by code, PII redactions | Attack attempts, and whether guards are firing | Any `pii_column` spike; any output PII redaction reviewed |
 | Destructive ops | Proposed, executed, cancelled, expired | A high cancel rate suggests bad matching | Executed > proposed is a bug: page |
 | UX | `/good`, `/bad`, comment | Direct measure of usefulness; feeds the learning loop | Bad share > 20% over 1 week |

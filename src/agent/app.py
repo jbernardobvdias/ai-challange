@@ -7,8 +7,8 @@ from langgraph.graph.state import CompiledStateGraph
 
 from agent.bigquery_runner import BigQueryRunner
 from agent.config import Settings
-from agent.graph import build_graph
 from agent.golden import GoldenIndex, gemini_embedder, load_trios
+from agent.graph import build_graph
 from agent.llm import Models
 from agent.persona import Persona
 from agent.prompts import build_system_prompt
@@ -25,6 +25,7 @@ from agent.warehouse import Warehouse
 
 
 def build_agent(settings: Settings, users: UserDirectory) -> CompiledStateGraph:
+    """Assemble the agent. New capabilities are added to the `tools` list; the graph does not change."""
     # Results are small, so the REST download path is fine; silence the suggestion to install bqstorage.
     warnings.filterwarnings("ignore", message="BigQuery Storage module not found")
 
@@ -34,7 +35,8 @@ def build_agent(settings: Settings, users: UserDirectory) -> CompiledStateGraph:
     reports = ReportStore(settings.db_path)
     profiles = ProfileStore(settings.db_path)
     tools = [
-        *make_sql_tools(warehouse, schema, SqlGuard(schema), users, max_rows=settings.max_result_rows),
+        *make_sql_tools(warehouse, schema, SqlGuard(schema, key_salt=settings.customer_key_salt), users,
+                       max_rows=settings.max_result_rows),
         *make_report_tools(reports),
         *make_preference_tools(profiles),
     ]

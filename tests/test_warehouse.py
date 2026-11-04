@@ -9,6 +9,7 @@ from agent.warehouse import QueryTooExpensive, Warehouse, WarehouseUnavailable
 class FakeJob:
     def __init__(self, df=None, error=None, bytes_processed=1000):
         self.df, self.error, self.total_bytes_processed, self.cancelled = df, error, bytes_processed, False
+        self.total_bytes_billed, self.job_id = bytes_processed, "job-1"
 
     def result(self, **_):
         if self.error:
@@ -113,11 +114,13 @@ def test_rate_limit_is_retried():
     assert not warehouse(client).execute_query("SELECT 1").empty
 
 
-def test_timed_out_job_is_cancelled():
+def test_timed_out_job_is_cancelled_not_retried():
     client = FakeClient(result_error=TimeoutError())
-    with pytest.raises(WarehouseUnavailable):
-        warehouse(client).execute_query("SELECT 1")
-    assert client.jobs and all(job.cancelled for job in client.jobs)
+    wh = warehouse(client)
+    with pytest.raises(QueryTooExpensive, match="did not finish"):
+        wh.execute_query("SELECT 1")
+    assert client.runs == 1 and client.jobs[0].cancelled
+    assert wh.breaker.allow()  # BigQuery is healthy; the query was the problem
 
 
 def test_repeat_query_is_served_from_cache_even_during_an_outage():

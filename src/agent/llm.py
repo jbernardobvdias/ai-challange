@@ -1,6 +1,7 @@
 """Gemini models: each call tries the primary, then the fallback, skipping any known to be down."""
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -11,8 +12,10 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from agent.config import Settings
 from agent.observability import emit
-from agent.resilience import CircuitBreaker, ErrorKind, classify_llm_error
+from agent.resilience import CircuitBreaker, ErrorKind, Pacer, classify_llm_error
 from agent.safety.input_guard import Classification
+
+MAX_QUOTA_WAIT_S = 45  # free-tier per-minute limits clear within this; daily limits don't
 
 
 class ModelsUnavailable(Exception):
@@ -28,8 +31,14 @@ def _gemini(model: str, timeout_s: float, attempts: int) -> BaseChatModel:
 class ModelChain:
     """Tries each (name, model, breaker) in order until one gives a usable response."""
 
-    def __init__(self, links: Sequence[tuple[str, Runnable, CircuitBreaker]]) -> None:
-        self.links = links
+    def __init__(
+        self,
+        links: Sequence[tuple[str, Runnable, CircuitBreaker]],
+        pacer: Pacer | None = None,
+        max_quota_wait_s: float = 0,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.links, self.pacer, self.max_quota_wait_s, self._sleep = links, pacer, max_quota_wait_s, sleep
 
     def invoke(self, messages: Any) -> Any:
         last_error: Exception | None = None
@@ -37,16 +46,28 @@ class ModelChain:
             if not breaker.allow():
                 emit("model_skipped", model=name)
                 continue
-            try:
-                response = model.invoke(messages)
-            except Exception as e:
-                last_error = e
-                kind, retry_after = classify_llm_error(e)
-                emit("model_failed", logging.WARNING, model=name, kind=kind.value, error=str(e)[:300])
-                if kind is ErrorKind.QUOTA:
-                    breaker.trip(retry_after)
-                elif kind is ErrorKind.TRANSIENT:
-                    breaker.record_failure()
+            may_wait = position == len(self.links) - 1  # nowhere else to go, so waiting beats failing
+            while True:
+                try:
+                    if self.pacer:
+                        self.pacer.wait()
+                    response = model.invoke(messages)
+                    break
+                except Exception as e:
+                    last_error, response = e, None
+                    kind, retry_after = classify_llm_error(e)
+                    emit("model_failed", logging.WARNING, model=name, kind=kind.value, error=str(e)[:300])
+                    if kind is ErrorKind.QUOTA and may_wait and 0 < retry_after <= self.max_quota_wait_s:
+                        emit("rate_limit_wait", logging.WARNING, model=name, seconds=retry_after)
+                        self._sleep(retry_after)
+                        may_wait = False
+                        continue
+                    if kind is ErrorKind.QUOTA:
+                        breaker.trip(retry_after)
+                    elif kind is ErrorKind.TRANSIENT:
+                        breaker.record_failure()
+                    break
+            if response is None:
                 continue
             breaker.record_success()
             # Gemini occasionally returns nothing, e.g. after a malformed function call.
@@ -67,6 +88,7 @@ class Models:
         self._primary_breaker = CircuitBreaker(settings.model, threshold=2, cooldown_s=60)
         self._fallback_breaker = CircuitBreaker(settings.fallback_model, threshold=3, cooldown_s=30)
         self._classifier_breaker = CircuitBreaker("classifier", threshold=2, cooldown_s=120)
+        self._pacer = Pacer(settings.llm_min_interval_s)
 
     def chat(self, tools: Sequence[BaseTool] = ()) -> ModelChain:
         """Primary gets one quick attempt. The fallback is the last resort, so it gets more patience."""
@@ -78,10 +100,10 @@ class Models:
         return ModelChain([
             (s.model, bind(_gemini(s.model, s.llm_timeout_s, attempts=1)), self._primary_breaker),
             (s.fallback_model, bind(_gemini(s.fallback_model, s.fallback_timeout_s, attempts=2)), self._fallback_breaker),
-        ])
+        ], self._pacer, max_quota_wait_s=MAX_QUOTA_WAIT_S)
 
     def classifier(self) -> ModelChain:
         """Cheap, fast model for screening input. Failures are handled by the InputGuard."""
         s = self.settings
         model = _gemini(s.fallback_model, s.classifier_timeout_s, attempts=1)
-        return ModelChain([("classifier", model.with_structured_output(Classification), self._classifier_breaker)])
+        return ModelChain([("classifier", model.with_structured_output(Classification), self._classifier_breaker)], self._pacer)

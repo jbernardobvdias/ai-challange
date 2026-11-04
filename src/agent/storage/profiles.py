@@ -5,7 +5,7 @@ every later turn, so free text would let one message plant instructions that per
 """
 import sqlite3
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -32,10 +32,12 @@ _DESCRIPTIONS = {
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class ProfileStore:
+    """Stores each user's answer preferences."""
+
     def __init__(self, path: Path, clock: Callable[[], datetime] = _utcnow) -> None:
         self.path, self.now = path, clock
         path.parent.mkdir(parents=True, exist_ok=True)

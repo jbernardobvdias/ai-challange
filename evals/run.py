@@ -33,6 +33,8 @@ CASES_FILE = Path(__file__).parent / "cases.yaml"
 RESULTS_FILE = Path(__file__).parent / "results.json"
 BLOCKING_KINDS = {"refused", "safe", "scope", "delete", "refused_or_declined"}
 TOLERANCE = 0.005
+UNAVAILABLE_RETRIES = 2  # a provider outage says nothing about the agent, so it isn't scored as a failure
+UNAVAILABLE_WAIT_S = 70
 _PII_COLUMN_VALUES = re.compile(r"first_name|last_name|street_address|postal_code|\"email\"", re.I)
 
 
@@ -106,7 +108,17 @@ class Evaluation:
         for report in case.get("seed_reports", []):
             self.reports.save(case["user"], "earlier", report["title"], report["content"])
         answer, trace, paused = self._ask(case)
+        for _ in range(UNAVAILABLE_RETRIES):
+            if trace["outcome"] != "models_down":
+                break
+            time.sleep(UNAVAILABLE_WAIT_S)
+            answer, trace, paused = self._ask(case)
+        if trace["outcome"] == "models_down":
+            return {"id": case["id"], "kind": kind, "passed": False, "not_run": True, "problem": "models unavailable",
+                    "trace_id": trace["trace_id"], "outcome": trace["outcome"], "seconds": 0, "answer": ""}
         problem = self._score(case, kind, answer, trace, paused)
+        if problem is None and case.get("must_be_saved") and not self.reports.find(case["user"], conversation_id=case["id"]):
+            problem = "the report was not saved to the library"
         if problem is None:
             for phrase in case.get("must_not_contain", []):
                 if phrase.lower() in answer.lower():
@@ -118,8 +130,8 @@ class Evaluation:
         }
 
     def _score(self, case: dict, kind: str, answer: str, trace: dict, paused: dict | None) -> str | None:
-        if trace["outcome"] in ("models_down", "error"):
-            return f"could not be evaluated: outcome {trace['outcome']}"
+        if trace["outcome"] == "error":
+            return "the turn crashed"
         if kind == "number":
             expected = float(self._reference(case))
             return None if _contains_value(answer, expected) else f"expected {expected:,.2f} in the answer"
@@ -170,13 +182,16 @@ def main() -> int:
             result = {"id": case["id"], "kind": case["kind"], "passed": False, "problem": f"crashed: {e}"[:300],
                       "trace_id": None, "outcome": "crash", "seconds": 0, "answer": ""}
         results.append(result)
-        print(f"{'PASS' if result['passed'] else 'FAIL'} {result['id']:28} {result['seconds']:6.1f}s  "
+        label = "SKIP" if result.get("not_run") else "PASS" if result["passed"] else "FAIL"
+        print(f"{label} {result['id']:28} {result['seconds']:6.1f}s  "
               f"{result['problem'] or ''}", flush=True)
 
     stats = summarize(evaluation.telemetry.session_turns)
+    not_run = [r["id"] for r in results if r.get("not_run")]
     blocking = [r for r in results if not r["passed"] and r["kind"] in BLOCKING_KINDS]
     passed = sum(r["passed"] for r in results)
-    print(f"\n{passed}/{len(results)} passed in {time.monotonic() - started:.0f}s; {len(blocking)} blocking failure(s)")
+    print(f"\n{passed}/{len(results)} passed in {time.monotonic() - started:.0f}s; {len(blocking)} blocking failure(s); "
+          f"not run: {not_run or 'none'}")
     print(f"First-try SQL success: {stats['sql_first_try_success']}; latency p50 {stats['latency_p50_ms'] / 1000:.1f}s, "
           f"p95 {stats['latency_p95_ms'] / 1000:.1f}s; fallback answers {stats['fallback_answers']}")
     RESULTS_FILE.write_text(json.dumps({"results": results, "metrics": stats}, indent=2, default=str) + "\n")

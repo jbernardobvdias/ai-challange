@@ -21,6 +21,7 @@ CONFIRMATION_TTL = timedelta(minutes=5)
 UNDO_WINDOW = timedelta(minutes=10)
 SNIPPET_CHARS = 150
 NEEDS_CONFIRMATION = "needs_confirmation"
+REPORT_CREATED = "report_created"
 
 
 def _summary(report: Report) -> dict[str, Any]:
@@ -34,16 +35,49 @@ def _latest_answer(messages: list[AnyMessage]) -> str:
     return ""
 
 
-def pending_delete(messages: list[AnyMessage]) -> dict[str, Any] | None:
-    """The delete proposal from the latest batch of tool results, if there is one.
-
-    The model may propose several deletions at once, so they are merged into one confirmation.
-    """
+def _latest_tool_results(messages: list[AnyMessage]) -> list[ToolMessage]:
     batch = []
     for message in reversed(messages):
         if not isinstance(message, ToolMessage):
             break
         batch.append(message)
+    return batch
+
+
+def created_report_id(messages: list[AnyMessage]) -> int | None:
+    """The report just created by the latest tool results, if there is one."""
+    for message in _latest_tool_results(messages):
+        if message.name == "create_report":
+            result = json.loads(message.content)
+            if result["status"] == REPORT_CREATED:
+                return result["id"]
+    return None
+
+
+def matching_reports(store: ReportStore, user: str, conversation: str, filters: dict[str, Any]) -> list[Report]:
+    """The user's reports matching a delete proposal's filters, right now."""
+    return store.find(
+        user,
+        search=filters["search"] or None,
+        conversation_id=conversation if filters["this_conversation"] else None,
+        report_ids=filters["report_ids"] or None,
+    )
+
+
+def current_delete_matches(
+    store: ReportStore, user: str, conversation: str, proposal: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """What the proposal would delete now, which may differ from what the user was shown."""
+    found = {r.id: r for f in proposal["filters"] for r in matching_reports(store, user, conversation, f)}
+    return [_summary(found[i]) for i in sorted(found)]
+
+
+def pending_delete(messages: list[AnyMessage]) -> dict[str, Any] | None:
+    """The delete proposal from the latest batch of tool results, if there is one.
+
+    The model may propose several deletions at once, so they are merged into one confirmation.
+    """
+    batch = _latest_tool_results(messages)
     proposals = [
         p for p in (json.loads(m.content) for m in batch if m.name == "propose_delete")
         if p["status"] == NEEDS_CONFIRMATION
@@ -54,10 +88,28 @@ def pending_delete(messages: list[AnyMessage]) -> dict[str, Any] | None:
     return {
         "reports": sorted(reports.values(), key=lambda r: r["id"]),
         "expires_at": min(p["expires_at"] for p in proposals),
+        "filters": [p["filters"] for p in proposals],
     }
 
 
 def make_report_tools(store: ReportStore) -> list[BaseTool]:
+    """Tools for the saved reports library, all limited to the signed-in user."""
+
+    @tool
+    def create_report(title: str, content: str, config: RunnableConfig) -> str:
+        """Publish a finished report. It is saved to the user's library and shown to them exactly as
+        written, so use this instead of writing the report as your answer, and do not repeat it.
+
+        Args:
+            title: Short descriptive title.
+            content: The complete report in markdown.
+        """
+        settings = config["configurable"]
+        clean_title, _ = scrub_text(title)
+        clean_content, _ = scrub_text(content)
+        report = store.save(settings["user_id"], settings["thread_id"], clean_title, clean_content)
+        emit("report_created", report_id=report.id)
+        return json.dumps({"status": REPORT_CREATED, **_summary(report)})
 
     @tool
     def save_report(
@@ -66,7 +118,7 @@ def make_report_tools(store: ReportStore) -> list[BaseTool]:
         state: Annotated[dict, InjectedState],
         content: str = "",
     ) -> str:
-        """Save a report to the user's library. Only use it when the user asks to save.
+        """Save an earlier answer to the user's library. Only use it when the user asks to save.
 
         Args:
             title: Short descriptive title.
@@ -129,12 +181,8 @@ def make_report_tools(store: ReportStore) -> list[BaseTool]:
         if not (search or this_conversation or report_ids or all_reports):
             return json.dumps({"status": "error", "message": "Say which reports to delete: give at least one filter."})
         settings = config["configurable"]
-        reports = store.find(
-            settings["user_id"],
-            search=search or None,
-            conversation_id=settings["thread_id"] if this_conversation else None,
-            report_ids=report_ids or None,
-        )
+        filters = {"search": search, "this_conversation": this_conversation, "report_ids": report_ids}
+        reports = matching_reports(store, settings["user_id"], settings["thread_id"], filters)
         if not reports:
             return json.dumps({"status": "no_matches", "message": "No saved reports of this user match. Nothing to delete."})
         store.audit(settings["user_id"], "delete_proposed", [r.id for r in reports], settings["thread_id"])
@@ -143,6 +191,7 @@ def make_report_tools(store: ReportStore) -> list[BaseTool]:
             "status": NEEDS_CONFIRMATION,
             "reports": [_summary(r) for r in reports],
             "expires_at": (store.now() + CONFIRMATION_TTL).isoformat(),
+            "filters": filters,
         })
 
     @tool
@@ -154,4 +203,4 @@ def make_report_tools(store: ReportStore) -> list[BaseTool]:
             return json.dumps({"status": "nothing_to_restore", "message": "No deletion in the last 10 minutes."})
         return json.dumps({"status": "restored", "reports": [_summary(r) for r in restored]})
 
-    return [save_report, list_reports, get_report, propose_delete, restore_deleted_reports]
+    return [create_report, save_report, list_reports, get_report, propose_delete, restore_deleted_reports]

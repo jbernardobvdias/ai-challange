@@ -9,7 +9,8 @@ from agent.config import CONFIG_DIR, ConfigError
 _SCOPE_KEYS = {"departments": "department", "categories": "category", "brands": "brand"}
 
 
-def _sql_string(value: str) -> str:
+def sql_string(value: str) -> str:
+    """Quote a value as a BigQuery string literal."""
     escaped = value.replace("\\", "\\\\").replace("'", "\\'")
     return f"'{escaped}'"
 
@@ -26,7 +27,7 @@ class ProductScope:
     def to_sql_predicate(self) -> str:
         """SQL condition on the products table. Only call when the scope is restricted."""
         return " AND ".join(
-            f"{column} IN ({', '.join(_sql_string(v) for v in values)})"
+            f"{column} IN ({', '.join(sql_string(v) for v in values)})"
             for column, values in self.filters
         )
 
@@ -38,6 +39,8 @@ class ProductScope:
 
 @dataclass(frozen=True)
 class User:
+    """A signed-in executive. Not a customer in the dataset's users table."""
+
     id: str
     name: str
     scope: ProductScope
@@ -60,6 +63,8 @@ def _parse_scope(user_id: str, raw: object) -> ProductScope:
 
 
 class UserDirectory:
+    """Looks up users and their product scope."""
+
     def __init__(self, path: Path = CONFIG_DIR / "users.yaml") -> None:
         raw = yaml.safe_load(path.read_text())["users"]
         self._users = {

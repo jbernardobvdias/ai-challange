@@ -1,6 +1,6 @@
 # Project Plan (historical)
 
-> The plan this project was built from, kept for reference. Some details changed during the build. For the current state, see the [README](../README.md) and [requirements.md](requirements.md).
+> The plan this project was built from, kept for reference. Some details changed during the build, and the questions it lists have moved to the README. For the current state, see the [README](../README.md) and [requirements.md](requirements.md).
 
 ---
 

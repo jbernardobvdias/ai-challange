@@ -29,6 +29,8 @@ _STOPWORDS = frozenset(
 
 @dataclass(frozen=True)
 class Trio:
+    """One past question, with how analysts interpreted, queried and reported it."""
+
     id: str
     question: str
     interpretation: str
@@ -37,6 +39,7 @@ class Trio:
 
 
 def load_trios(directory: Path) -> list[Trio]:
+    """Load every trio file in a directory."""
     return [Trio(**json.loads(path.read_text())) for path in sorted(directory.glob("*.json"))]
 
 
@@ -46,10 +49,12 @@ def _words(text: str) -> set[str]:
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(x * x for x in b))
-    return sum(x * y for x, y in zip(a, b)) / norm if norm else 0.0
+    return sum(x * y for x, y in zip(a, b, strict=True)) / norm if norm else 0.0
 
 
 class GoldenIndex:
+    """Similarity search over trios."""
+
     def __init__(
         self,
         trios: Sequence[Trio],
@@ -81,7 +86,7 @@ class GoldenIndex:
         vectors = self._trio_vectors()
         query = self.embed([question])[0]
         self.breaker.record_success()
-        scored = sorted(zip((_cosine(query, v) for v in vectors), self.trios), key=lambda s: -s[0])
+        scored = sorted(zip((_cosine(query, v) for v in vectors), self.trios, strict=True), key=lambda s: -s[0])
         return [trio for score, trio in scored[:self.top_k] if score >= MIN_SIMILARITY]
 
     def _search_by_words(self, question: str) -> list[Trio]:
@@ -99,10 +104,10 @@ class GoldenIndex:
             texts = [f"{t.question}\n{t.interpretation}" for t in self.trios]
             keys = [hashlib.sha256(f"{EMBEDDING_MODEL}:{text}".encode()).hexdigest() for text in texts]
             cache = self._read_cache()
-            missing = [(k, text) for k, text in zip(keys, texts) if k not in cache]
+            missing = [(k, text) for k, text in zip(keys, texts, strict=True) if k not in cache]
             if missing:
                 new = self.embed([text for _, text in missing])
-                cache.update({k: v for (k, _), v in zip(missing, new)})
+                cache.update({k: v for (k, _), v in zip(missing, new, strict=True)})
                 self._write_cache(cache)
             self._vectors = [cache[k] for k in keys]
         return self._vectors
@@ -120,6 +125,7 @@ class GoldenIndex:
 
 
 def gemini_embedder(timeout_s: float = 5) -> Embedder:
+    """An embedding function backed by Gemini."""
     from google import genai
     from google.genai import types
 

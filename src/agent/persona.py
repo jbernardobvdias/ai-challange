@@ -16,6 +16,8 @@ MAX_PERSONA_CHARS = 1500
 
 
 class Persona:
+    """Reads the editable tone."""
+
     def __init__(self, path: Path = CONFIG_DIR / "persona.yaml") -> None:
         self.path = path
         self._last_good = ""

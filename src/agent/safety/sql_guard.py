@@ -2,21 +2,23 @@
 
 1. Parse with sqlglot. Anything unparsable or not a single read-only query is rejected.
 2. Reject references to personal-data columns, tables outside the allowlist, and risky functions.
-3. Rewrite every table reference into a secure view that exposes only non-PII columns and only
-   rows within the user's product scope. Tricks that read a whole row (`SELECT u`,
-   `TO_JSON_STRING(u)`, `SELECT *`) therefore cannot reach personal data.
+3. Rewrite every table reference into a secure view that exposes only non-PII columns, hashes
+   customer keys, and keeps only rows within the user's product scope. Tricks that read a whole row
+   (`SELECT u`, `TO_JSON_STRING(u)`, `SELECT *`) therefore cannot reach personal data, and keys
+   still join because the same customer always hashes to the same value.
 4. Cap the number of rows.
 
 Only the SQL rendered from the checked syntax tree is executed, never the model's original text.
 """
 import logging
+import secrets
 
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from agent.schema import Schema
-from agent.users import ProductScope
+from agent.schema import Column, Schema
+from agent.users import ProductScope, sql_string
 
 logging.getLogger("sqlglot").setLevel(logging.ERROR)  # rejected input is handled below
 
@@ -33,9 +35,14 @@ class SqlRejected(Exception):
 
 
 class SqlGuard:
-    def __init__(self, schema: Schema, max_rows: int = 1000) -> None:
+    """Validates model-written SQL and rewrites it to run safely for a given user."""
+
+    def __init__(self, schema: Schema, max_rows: int = 1000, key_salt: str | None = None) -> None:
         self.schema = schema
         self.max_rows = max_rows
+        # Without a configured salt, keys are stable for this process only. That also means
+        # a key cannot be matched against a previous session or reversed by hashing known IDs.
+        self._key_salt = key_salt or secrets.token_hex(16)
         catalog, dataset = schema.dataset.split(".")
         self._catalog, self._dataset = catalog.lower(), dataset.lower()
         self._pii = {c for cols in schema.pii_columns.values() for c in cols}
@@ -108,7 +115,7 @@ class SqlGuard:
         return view.subquery(alias=table.alias or table.name, copy=False)
 
     def _view_sql(self, name: str, scope: ProductScope) -> str:
-        columns = ", ".join(c.name for c in self.schema.tables[name].public_columns)
+        columns = ", ".join(self._view_column(c) for c in self.schema.tables[name].public_columns)
         select = f"SELECT {columns} FROM {self.schema.fqn(name)}"
         if scope.unrestricted:
             return select
@@ -123,6 +130,12 @@ class SqlGuard:
             "users": f"id IN ({scoped_items.format(key='user_id')})",
         }
         return f"{select} WHERE {conditions[name]}"
+
+    def _view_column(self, column: Column) -> str:
+        if not column.pseudonymous:
+            return column.name
+        salted = f"CONCAT({sql_string(self._key_salt)}, CAST({column.name} AS STRING))"
+        return f"SUBSTR(TO_HEX(SHA256({salted})), 1, 12) AS {column.name}"
 
     def _cap_rows(self, tree: exp.Query) -> None:
         limit = tree.args.get("limit")

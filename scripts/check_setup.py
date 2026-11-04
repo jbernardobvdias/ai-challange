@@ -22,6 +22,8 @@ PII_COLUMNS = {
     "users": {"first_name", "last_name", "email", "street_address",
               "postal_code", "latitude", "longitude", "user_geom"},
 }
+# Customer keys, hashed by the SQL guard so that real IDs never leave BigQuery.
+PSEUDONYMOUS_COLUMNS = {"orders": {"user_id"}, "order_items": {"user_id"}, "users": {"id"}}
 
 
 def ok(msg: str) -> None:
@@ -45,26 +47,37 @@ def check_env() -> bool:
 
 
 def check_gemini() -> bool:
+    """Passes if either model answers: the agent falls back automatically when the primary can't."""
     print("2. Gemini API")
-    model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-    try:
-        from google import genai
-        from google.genai import types
+    from google import genai
+    from google.genai import types
 
-        # The SDK has no request timeout by default and retries 5xx up to 5 times
-        # with backoff, which looks like a hang when the model is overloaded.
-        http_options = types.HttpOptions(
-            timeout=30_000,  # ms
-            retry_options=types.HttpRetryOptions(attempts=2),
-        )
-        client = genai.Client(http_options=http_options)  # reads GOOGLE_API_KEY
+    # The SDK has no request timeout by default and retries 5xx up to 5 times
+    # with backoff, which looks like a hang when the model is overloaded.
+    http_options = types.HttpOptions(
+        timeout=30_000,  # ms
+        retry_options=types.HttpRetryOptions(attempts=2),
+    )
+    client = genai.Client(http_options=http_options)  # reads GOOGLE_API_KEY
+    models = [
+        os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+        os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite"),
+    ]
+    results = []
+    for model in models:
         print(f"         calling {model} (30s timeout)...", flush=True)
-        resp = client.models.generate_content(model=model, contents="Reply with the single word: OK")
-        ok(f"{model} responded: {resp.text.strip()!r}")
-        return True
-    except Exception as e:
-        fail(f"{model}: {e}")
-        return False
+        try:
+            resp = client.models.generate_content(model=model, contents="Reply with the single word: OK")
+            ok(f"{model} responded: {resp.text.strip()!r}")
+            results.append(True)
+        except Exception as e:
+            print(f"  [WARN] {model}: {str(e)[:160]}")
+            results.append(False)
+    if not any(results):
+        fail("No Gemini model responded. Check GOOGLE_API_KEY and the model names.")
+    elif not results[0]:
+        print("  [WARN] The primary model is unavailable now, so answers will come from the fallback.")
+    return any(results)
 
 
 def check_bigquery() -> BigQueryRunner | None:
@@ -102,6 +115,8 @@ def write_schema(runner: BigQueryRunner) -> None:
         for col in columns:
             col["description"] = col["description"] or old_desc.get(col["name"], "")
             col["pii"] = col["name"] in pii
+            if col["name"] in PSEUDONYMOUS_COLUMNS.get(table, set()):
+                col["pseudonymous"] = True
         schema["tables"][table] = {"description": old_table.get("description", ""), "columns": columns}
         ok(f"{table}: {len(columns)} columns ({sum(c['pii'] for c in columns)} PII)")
 

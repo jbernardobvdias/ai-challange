@@ -9,9 +9,11 @@ import uuid
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+from agent.observability import current_trace_id
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS reports (
@@ -31,13 +33,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
     user_id         TEXT NOT NULL,
     action          TEXT NOT NULL,
     report_ids      TEXT NOT NULL,
-    conversation_id TEXT
+    conversation_id TEXT,
+    trace_id        TEXT
 );
 """
 
 
 @dataclass(frozen=True)
 class Report:
+    """A saved report."""
+
     id: int
     title: str
     content: str
@@ -46,7 +51,7 @@ class Report:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _report(row: sqlite3.Row) -> Report:
@@ -54,11 +59,17 @@ def _report(row: sqlite3.Row) -> Report:
 
 
 class ReportStore:
+    """Stores reports and the audit log."""
+
     def __init__(self, path: Path, clock: Callable[[], datetime] = _utcnow) -> None:
         self.path, self.now = path, clock
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             db.executescript(_SCHEMA)
+            # Databases created before trace IDs were added to the audit log.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_log)")}
+            if "trace_id" not in columns:
+                db.execute("ALTER TABLE audit_log ADD COLUMN trace_id TEXT")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -73,8 +84,9 @@ class ReportStore:
 
     def _audit(self, db: sqlite3.Connection, user: str, action: str, ids: Sequence[int], conversation: str | None) -> None:
         db.execute(
-            "INSERT INTO audit_log (at, user_id, action, report_ids, conversation_id) VALUES (?, ?, ?, ?, ?)",
-            (self.now().isoformat(), user, action, json.dumps(list(ids)), conversation),
+            "INSERT INTO audit_log (at, user_id, action, report_ids, conversation_id, trace_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (self.now().isoformat(), user, action, json.dumps(list(ids)), conversation, current_trace_id()),
         )
 
     def audit(self, user: str, action: str, ids: Sequence[int], conversation: str | None = None) -> None:

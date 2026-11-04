@@ -15,6 +15,8 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class Settings:
+    """All runtime settings. Only GOOGLE_API_KEY and GCP_PROJECT are required."""
+
     gcp_project: str
     model: str
     fallback_model: str
@@ -27,9 +29,13 @@ class Settings:
     db_path: Path
     log_dir: Path
     golden_dir: Path
+    llm_min_interval_s: float
+    log_level: str
+    customer_key_salt: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
+        """Read settings from the environment and .env, failing clearly if any are missing."""
         load_dotenv(ROOT / ".env")
         missing = [v for v in ("GOOGLE_API_KEY", "GCP_PROJECT") if not os.getenv(v)]
         if missing:
@@ -51,4 +57,7 @@ class Settings:
             db_path=Path(os.getenv("APP_DB_PATH", ROOT / "data" / "app.db")),
             log_dir=Path(os.getenv("LOG_DIR", ROOT / "logs")),
             golden_dir=Path(os.getenv("GOLDEN_DIR", ROOT / "data" / "golden_trios")),
+            llm_min_interval_s=float(os.getenv("LLM_MIN_INTERVAL_S", "4")),
+            log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            customer_key_salt=os.getenv("CUSTOMER_KEY_SALT") or None,
         )

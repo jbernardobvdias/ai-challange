@@ -32,6 +32,7 @@ def make_sql_tools(
     users: UserDirectory,
     max_rows: int,
 ) -> list[BaseTool]:
+    """Tools for describing and querying the data, within the signed-in user's scope."""
 
     @tool
     def describe_schema() -> str:

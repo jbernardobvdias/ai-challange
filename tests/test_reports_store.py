@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -7,7 +7,7 @@ from agent.storage.reports_store import ReportStore
 
 class Clock:
     def __init__(self):
-        self.now = datetime(2026, 11, 4, tzinfo=timezone.utc)
+        self.now = datetime(2026, 11, 4, tzinfo=UTC)
 
     def __call__(self):
         return self.now

@@ -11,8 +11,9 @@ tables:
     - name: user_id
       type: INTEGER
       mode: NULLABLE
-      description: Customer who placed the order (FK users.id). Internal key - never display.
+      description: 'Customer who placed the order. Pseudonymous key: joins to users.id and is safe to show as e.g. ''Customer 3fa9c1''.'
       pii: false
+      pseudonymous: true
     - name: status
       type: STRING
       mode: NULLABLE
@@ -64,8 +65,9 @@ tables:
     - name: user_id
       type: INTEGER
       mode: NULLABLE
-      description: FK users.id. Internal key - never display.
+      description: 'Customer who bought the item. Pseudonymous key: joins to users.id and is safe to show.'
       pii: false
+      pseudonymous: true
     - name: product_id
       type: INTEGER
       mode: NULLABLE
@@ -160,8 +162,9 @@ tables:
     - name: id
       type: INTEGER
       mode: NULLABLE
-      description: Primary key. Internal key - never display.
+      description: 'Pseudonymous customer key: joins to user_id and is safe to show. Real customer IDs are not available.'
       pii: false
+      pseudonymous: true
     - name: first_name
       type: STRING
       mode: NULLABLE

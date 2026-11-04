@@ -10,6 +10,7 @@
                 END <---------+------------------------------------ END  END
 """
 import logging
+import re
 from collections.abc import Callable
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
@@ -34,9 +35,10 @@ from agent.resilience import (
 from agent.safety.input_guard import REFUSALS, InputGuard
 from agent.safety.pii import scrub_text
 from agent.storage.reports_store import ReportStore
-from agent.tools.reports import UNDO_WINDOW, pending_delete
+from agent.tools.reports import UNDO_WINDOW, created_report_id, current_delete_matches, pending_delete
 from agent.users import User, UserDirectory
 
+DEFAULT_LIMITS = TurnLimits()
 HISTORY_MESSAGES = 4  # recent messages given to the input classifier for context
 HISTORY_CHARS = 300
 
@@ -61,10 +63,12 @@ this conversation. Say clearly which parts of the question you could not answer.
 _CONFIRM_WORDS = {"confirm"}
 _CANCEL_WORDS = {"no", "n", "nope", "cancel", "stop", "abort", "never mind", "nevermind", "don't", "do not"}
 # Sounds like agreement, but a destructive action needs the exact word: ask again rather than guess.
-_UNCLEAR_WORDS = {"", "yes", "y", "yep", "yeah", "ok", "okay", "sure", "delete", "delete them", "do it", "go ahead", "proceed"}
+_AGREEMENT_WORDS = {"yes", "y", "yep", "yeah", "ok", "okay", "sure", "please", "delete", "them", "do", "it", "go", "ahead", "proceed"}
 
 
 class AgentState(MessagesState):
+    """Conversation messages, plus what the current turn needs to route correctly."""
+
     blocked: bool
     examples: str  # past expert work relevant to the current question
     approved_delete: list[int]
@@ -84,9 +88,10 @@ def build_graph(
     checkpointer: BaseCheckpointSaver,
     reports: ReportStore,
     summary_llm: Runnable | None = None,
-    limits: TurnLimits = TurnLimits(),
+    limits: TurnLimits = DEFAULT_LIMITS,
     golden: GoldenIndex | None = None,
 ) -> CompiledStateGraph:
+    """Compile the graph. Its dependencies are passed in, so tests can use scripted models and tools."""
 
     def check_input(state: AgentState, config: RunnableConfig) -> dict:
         *previous, message = state["messages"]
@@ -114,22 +119,39 @@ def build_graph(
     def after_tools(state: AgentState) -> str:
         if pending_delete(state["messages"]):
             return "confirm_delete"
+        if created_report_id(state["messages"]) is not None:
+            return "present_report"
         return "give_up" if stop_reason(current_turn(state["messages"]), limits) else "agent"
+
+    def present_report(state: AgentState, config: RunnableConfig) -> dict:
+        """Show exactly what was saved, without paying the model to write it a second time."""
+        report_id = created_report_id(state["messages"])
+        report = reports.find(config["configurable"]["user_id"], report_ids=[report_id])[0]
+        return {"messages": [AIMessage(f"{report.content}\n\n---\n_Saved to your library as report {report.id}._")]}
 
     def confirm_delete(state: AgentState, config: RunnableConfig) -> Command:
         """Pause until the user decides. Re-runs from the top on each answer, so this node changes
         nothing except by its returned Command."""
         settings = config["configurable"]
+        user, conversation = settings["user_id"], settings["thread_id"]
         proposal = pending_delete(state["messages"])
-        reprompt = False
+        shown = proposal["reports"]
+        reprompt = None
         while True:
-            answer = interrupt({**proposal, "reprompt": reprompt})
+            answer = interrupt({"reports": shown, "expires_at": proposal["expires_at"], "reprompt": reprompt})
             word = str(answer).strip().lower().rstrip(".!")
-            if word not in _UNCLEAR_WORDS:
-                break
-            reprompt = True
+            if set(re.findall(r"[a-z']+", word)) <= _AGREEMENT_WORDS:
+                reprompt = "unclear"
+                continue
+            if word in _CONFIRM_WORDS:
+                # If the matches changed, the user has to see the new list: never delete unseen reports.
+                current = current_delete_matches(reports, user, conversation, proposal)
+                if current and {r["id"] for r in current} != {r["id"] for r in shown}:
+                    shown, reprompt = current, "changed"
+                    continue
+            break
 
-        ids = [r["id"] for r in proposal["reports"]]
+        ids = [r["id"] for r in shown]
         if word in _CONFIRM_WORDS:
             if reports.now().isoformat() > proposal["expires_at"]:
                 reports.audit(settings["user_id"], "delete_expired", ids, settings["thread_id"])
@@ -187,6 +209,7 @@ def build_graph(
     graph.add_node("agent", agent)
     graph.add_node("tools", ToolNode(tools))
     graph.add_node("give_up", give_up)
+    graph.add_node("present_report", present_report)
     graph.add_node("confirm_delete", confirm_delete, destinations=("execute_delete", "input_guard", END))
     graph.add_node("execute_delete", execute_delete)
     graph.add_node("output_guard", check_output)
@@ -195,7 +218,8 @@ def build_graph(
     graph.add_conditional_edges("input_guard", lambda s: END if s["blocked"] else "load_examples")
     graph.add_edge("load_examples", "agent")
     graph.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: "output_guard"})
-    graph.add_conditional_edges("tools", after_tools, ["agent", "give_up", "confirm_delete"])
+    graph.add_conditional_edges("tools", after_tools, ["agent", "give_up", "confirm_delete", "present_report"])
+    graph.add_edge("present_report", "output_guard")
     graph.add_edge("execute_delete", END)
     graph.add_edge("give_up", "output_guard")
     graph.add_edge("output_guard", END)

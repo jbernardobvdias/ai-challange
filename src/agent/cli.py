@@ -9,9 +9,9 @@ import uuid
 
 from google.auth.exceptions import DefaultCredentialsError
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.types import Command
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
-from langgraph.types import Command
 from rich import box
 from rich.console import Console
 from rich.markdown import Markdown
@@ -48,6 +48,8 @@ RECURSION_LIMIT = 40  # backstop only: TurnLimits normally ends a turn well befo
 
 
 class ChatCLI:
+    """The interactive chat loop for one signed-in user."""
+
     def __init__(self, user_id: str, verbose: bool) -> None:
         self.console = Console()
         users = UserDirectory()
@@ -56,7 +58,7 @@ class ChatCLI:
         self.thread_id = self._new_thread()
         self.session: PromptSession = PromptSession(history=InMemoryHistory())
         self.settings = Settings.from_env()
-        setup_logging(self.settings.log_dir)
+        setup_logging(self.settings.log_dir, self.settings.log_level)
         self.telemetry = Telemetry(self.settings.log_dir)
         with self.console.status("Connecting to Gemini and BigQuery…"):
             self.agent = build_agent(self.settings, users)
@@ -66,6 +68,7 @@ class ChatCLI:
         return uuid.uuid4().hex[:8]
 
     def run(self) -> None:
+        """Read messages until the user exits."""
         examples = "\n".join(f"  • {e}" for e in EXAMPLES)
         self.console.print(Panel(
             f"Signed in as [bold]{self.user.name}[/]\nAccess: {self.user.scope.describe()}\n"
@@ -79,6 +82,8 @@ class ChatCLI:
                 break
             if not text:
                 continue
+            if text.lower() in ("exit", "quit"):
+                break
             if text.startswith("/"):
                 if not self._command(text):
                     break
@@ -197,7 +202,9 @@ class ChatCLI:
             table.add_row(str(report["id"]), Text(report["title"]), report["created_at"])
 
         self.console.print()
-        if confirmation["reprompt"]:
+        if confirmation["reprompt"] == "changed":
+            self.console.print("[yellow]The matching reports have changed. Please check this list again.[/]")
+        elif confirmation["reprompt"]:
             self.console.print("[yellow]To delete, please type exactly: confirm[/]")
         self.console.print(Panel(
             table, title=f"Delete {len(reports)} report(s)?", title_align="left", border_style="yellow",
@@ -230,6 +237,7 @@ def _tool_label(call: dict) -> str:
         return f"Querying: {call['args'].get('purpose') or 'running SQL'}"
     labels = {
         "describe_schema": "Looking up available data",
+        "create_report": "Writing the report",
         "save_report": "Saving the report",
         "list_reports": "Looking up your reports",
         "get_report": "Opening the report",
@@ -244,6 +252,7 @@ def _tool_label(call: dict) -> str:
 
 
 def main() -> None:
+    """Parse arguments and start the chat, with clear messages for setup problems."""
     parser = argparse.ArgumentParser(description="Retail analytics chat assistant")
     parser.add_argument("--user", default="alice", help="user to sign in as")
     parser.add_argument("--verbose", "-v", action="store_true", help="show SQL and tool results")
@@ -252,10 +261,10 @@ def main() -> None:
         ChatCLI(args.user, args.verbose).run()
     except ConfigError as e:
         Console().print(f"[red]Configuration error:[/] {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
     except DefaultCredentialsError:
         Console().print("[red]Not signed in to Google Cloud.[/] Run: gcloud auth application-default login")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

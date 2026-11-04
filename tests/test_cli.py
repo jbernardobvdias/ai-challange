@@ -6,7 +6,6 @@ from langgraph.types import Interrupt
 from rich.console import Console
 
 from agent import cli
-from agent.config import Settings
 
 
 class FakeAgent:
@@ -121,3 +120,35 @@ def test_turn_pauses_for_confirmation_and_resumes_with_the_answer(chat):
     instance._turn("Delete it")
     assert inputs[1].resume == "confirm"
     assert "Deleted 1 report(s)." in output(instance)
+
+
+@pytest.mark.parametrize("word", ["exit", "quit", "EXIT", "/exit", "/quit"])
+def test_leaving_the_app(chat, word):
+    instance = chat(lambda: iter(()))
+    instance.session = FakeSession(word)
+    instance.run()
+    assert "Bye." in output(instance)
+
+
+def test_empty_and_unicode_input(chat):
+    asked = []
+
+    def behaviour():
+        asked.append(True)
+        yield {"agent": {"messages": [AIMessage("Olá 👋")]}}
+
+    instance = chat(behaviour)
+    instance.session = FakeSession("", "   ", "Quanto vendemos em março? 👋", "exit")
+    instance.run()
+    assert len(asked) == 1
+    assert "Olá" in output(instance)
+
+
+def test_turn_crash_keeps_the_session_alive(chat):
+    def explode():
+        raise RuntimeError("boom")
+
+    instance = chat(explode)
+    instance.session = FakeSession("first", "exit")
+    instance.run()
+    assert "Reference:" in output(instance) and "Bye." in output(instance)

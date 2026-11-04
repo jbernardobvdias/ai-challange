@@ -152,8 +152,10 @@ flowchart TD
     IG -- "ok" --> EXAMPLES["<b>load_examples</b><br/>golden trios similar to the question"]
     EXAMPLES --> AGENT["agent (Gemini)<br/>plan · choose tools · synthesize"]
 
-    AGENT -- "tool calls" --> TOOLS["<b>tools</b><br/>describe_schema · run_sql<br/>search_golden_trios · save_report<br/>list_reports · get_report · propose_delete<br/>restore_deleted_reports · remember_preference"]
+    AGENT -- "tool calls" --> TOOLS["<b>tools</b><br/>describe_schema · run_sql<br/>search_golden_trios · save_report<br/>list_reports · get_report · propose_delete<br/>restore_deleted_reports · remember_preference<br/>create_report"]
     TOOLS -- "observation<br/>(rows / structured error)" --> AGENT
+    TOOLS -- "create_report saved" --> PRESENT["<b>present_report</b><br/>show exactly what was saved"]
+    PRESENT --> OG
 
     TOOLS -- "propose_delete returned<br/>pending action" --> CONFIRM["<b>confirm_delete</b><br/>interrupt() → show exact list<br/>wait for user decision"]
     CONFIRM -- "exactly 'confirm', not expired" --> EXEC["<b>execute_delete</b><br/>owner check · soft delete · audit"]
@@ -271,7 +273,7 @@ Rules enforced in code:
 - **The model has no tool that deletes.** `propose_delete` only finds what would be deleted; `execute_delete` is a plain graph node reached only after the user's exact confirmation.
 - The owner comes from the signed-in user, and `owner_id = current_user` is applied in SQL by the store, so the model cannot widen it.
 - Zero matches → no confirmation step, just an informative message. A request with no filter is refused rather than treated as "everything".
-- Only the **exact IDs shown** are deleted. They come from the tool result stored in the checkpoint, so reports added after the proposal are unaffected, and reports already gone are reported honestly.
+- Only the **exact IDs shown** are deleted, and matches are re-checked on `confirm`. If they changed, the new list is shown and must be confirmed.
 - Confirmation expires after 5 minutes. A confirmation that isn't exactly `confirm` never deletes.
 - Soft delete + audit log → reversible and traceable. In production, a scheduled job hard-deletes after the retention window (not in the prototype).
 - Confirming and cancelling use no model call, so the outcome can't be misreported by the model and costs nothing.
@@ -352,6 +354,10 @@ The persona is only the **tone/style layer**. Safety rules, tool policies and ou
 | Cache, rate limits, breaker state | Memorystore | `agent-api` | `agent-api` | Ephemeral (TTL). |
 | Logs, traces, metrics | Cloud Logging / Trace / Monitoring → BigQuery sink; Langfuse | all services | Engineers, dashboards | Logs contain **no raw PII** (scrubbed before logging). 30 days hot, 1 year in BigQuery. |
 
+**Encryption:** all Google Cloud storage listed above is encrypted at rest by default, with customer-managed keys (CMEK) available if required, and all traffic uses TLS. **Where PII lives:** only in the source BigQuery table. It is not copied into any store above, is unreadable by the agent's service account, and never reaches Gemini.
+
+**The prototype differs:** `data/app.db` and `logs/` are plain local files, excluded from git, with no retention job.
+
 ---
 
 ## 9. Security boundaries
@@ -370,15 +376,14 @@ flowchart LR
     L7 --> R[Answer]
 ```
 
-- **Secure views**: the SQL Guard rewrites every table reference into a subquery that exposes only non-PII columns and only rows within the user's product scope. `products` is filtered directly; `order_items`, `orders` and `users` are limited to items, orders and buyers of those products. Queries that read a whole row (`SELECT *`, `SELECT u`, `TO_JSON_STRING(u)`) therefore cannot reach personal data, because it is not in what the query can see. In production this is backed by BigQuery **row-level access policies** on authorized views per entitlement group.
+- **Secure views**: the SQL Guard rewrites every table reference into a subquery that exposes only non-PII columns, hashes customer keys, and keeps only rows within the user's product scope. `products` is filtered directly; `order_items`, `orders` and `users` are limited to items, orders and buyers of those products. Queries that read a whole row (`SELECT *`, `SELECT u`, `TO_JSON_STRING(u)`) therefore cannot reach personal data, because it is not in what the query can see. In production this is backed by BigQuery **row-level access policies** on authorized views per entitlement group.
 - **Identity**: the user comes from the authenticated session through the run config. It is not a tool argument, so the model cannot choose whose scope applies.
 - **PII**: rejected at SQL level (layer 4), unreadable at IAM level (layer 5), and filtered in results and output (layers 6–7).
 
 **Known limitations of the prototype**
-- Customer keys are pseudonymous rather than PII (assumption, see README §10). Columns named `user_id` or `customer_id` are removed from results by name, but a query can rename a key (`SELECT id AS x FROM users`), and the model is relied on not to display it. Production would need column lineage or tokenised keys.
 - Small-group re-identification is not prevented: an aggregate can describe very few customers. Production would suppress groups below a minimum size.
 - `orders.num_of_item` counts every item in an order, including items outside the user's scope. `order_items` is the accurate table for scoped analysis.
-- The output scrubber recognises patterns (emails, phones, addresses, coordinates), not a bare person's name. Names are blocked at column level; production adds DLP.
+- The output scrubber recognises patterns (emails, phones, addresses, coordinates, labelled names), not a bare person's name. Real names can't reach the model through the data; production adds DLP.
 - If the input classifier is unavailable, messages pass through to the main agent. Rules, the SQL guard and output filters do not depend on it.
 
 ---

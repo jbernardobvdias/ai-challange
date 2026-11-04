@@ -60,7 +60,31 @@ class CircuitBreaker:
         emit("circuit_opened", logging.WARNING, circuit=self.name, seconds=round(duration_s))
 
 
+class Pacer:
+    """Keeps a minimum gap between model calls, to stay within free-tier rate limits."""
+
+    def __init__(
+        self,
+        min_interval_s: float,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.min_interval_s, self._clock, self._sleep = min_interval_s, clock, sleep
+        self._next_allowed = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        with self._lock:
+            now = self._clock()
+            delay = max(0.0, self._next_allowed - now)
+            self._next_allowed = max(now, self._next_allowed) + self.min_interval_s
+        if delay:
+            self._sleep(delay)
+
+
 class ErrorKind(Enum):
+    """Why a model call failed, which decides how the circuit breaker reacts."""
+
     QUOTA = "quota"  # retrying soon is pointless
     TRANSIENT = "transient"  # overloaded or timed out
     OTHER = "other"  # e.g. a bad request; says nothing about the service's health
@@ -93,6 +117,8 @@ class TurnLimits:
 
 
 class StopReason(Enum):
+    """Why a turn stopped before the model finished."""
+
     SQL_FAILURES = "sql_failures"
     LLM_CALLS = "llm_calls"
     TOKENS = "tokens"
@@ -119,11 +145,26 @@ def sql_statuses(turn: Sequence[AnyMessage]) -> list[str]:
     return statuses
 
 
+def _repeated_failed_sql(turn: Sequence[AnyMessage]) -> bool:
+    """True if the model just re-sent SQL that had already failed: another try cannot help."""
+    sql_by_call = {
+        c["id"]: " ".join(str(c["args"].get("sql", "")).split()).lower()
+        for m in turn if isinstance(m, AIMessage) for c in m.tool_calls if c["name"] == "run_sql"
+    }
+    results = [m for m in turn if isinstance(m, ToolMessage) and m.name == "run_sql"][-2:]
+    if len(results) < 2 or "ok" in sql_statuses(results):
+        return False
+    first, second = (sql_by_call.get(m.tool_call_id) for m in results)
+    return first is not None and first == second
+
+
 def stop_reason(turn: Sequence[AnyMessage], limits: TurnLimits) -> StopReason | None:
     """Why this turn must stop calling the model, or None if it may continue."""
     statuses = sql_statuses(turn)
     if "unavailable" in statuses:
         return StopReason.WAREHOUSE_UNAVAILABLE
+    if _repeated_failed_sql(turn):
+        return StopReason.SQL_FAILURES
 
     failures = 0
     for status in reversed(statuses):

@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from agent.resilience import (
     CircuitBreaker,
     ErrorKind,
+    Pacer,
     StopReason,
     TurnLimits,
     classify_llm_error,
@@ -131,3 +132,22 @@ def test_answered_tool_calls_are_left_alone():
     call = AIMessage("", tool_calls=[{"name": "run_sql", "args": {}, "id": "c1"}])
     messages = [call, ToolMessage("{}", tool_call_id="c1", name="run_sql")]
     assert close_dangling_tool_calls(messages) == messages
+
+
+def test_pacer_spaces_out_calls():
+    clock, sleeps = Clock(), []
+    pacer = Pacer(2.0, clock, sleeps.append)
+    pacer.wait()  # the first call never waits
+    assert sleeps == []
+    clock.now = 0.5
+    pacer.wait()
+    assert sleeps == [1.5]
+
+
+def test_pacer_does_not_slow_calls_that_are_already_far_apart():
+    clock, sleeps = Clock(), []
+    pacer = Pacer(2.0, clock, sleeps.append)
+    pacer.wait()
+    clock.now = 60
+    pacer.wait()
+    assert sleeps == []

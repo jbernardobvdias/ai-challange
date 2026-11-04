@@ -2,7 +2,7 @@
 
 Wraps the client from BigQueryRunner. Exceptions tell the caller what to do next:
 - BadRequest / NotFound: the SQL is wrong, so the model should fix it.
-- QueryTooExpensive: the model should narrow the query.
+- QueryTooExpensive: too big or too slow, so the model should narrow the query.
 - WarehouseUnavailable: nothing the model can do, so stop and tell the user.
 """
 import logging
@@ -33,17 +33,16 @@ from agent.resilience import CircuitBreaker
 
 _TRANSIENT = (
     BadGateway, GatewayTimeout, InternalServerError, ServiceUnavailable, TooManyRequests,
-    ConnectionError, TimeoutError, requests.exceptions.ConnectionError, requests.exceptions.Timeout,
+    ConnectionError, requests.exceptions.ConnectionError, requests.exceptions.Timeout,
 )
 
 
 class QueryTooExpensive(Exception):
-    def __init__(self, bytes_needed: int, bytes_allowed: int) -> None:
-        super().__init__(f"Query would scan {bytes_needed:,} bytes; the limit is {bytes_allowed:,}.")
+    """The query scans too much or takes too long."""
 
 
 class WarehouseUnavailable(Exception):
-    pass
+    """BigQuery can't be reached or refuses access, so the model can't fix this."""
 
 
 def _is_transient(error: BaseException) -> bool:
@@ -75,6 +74,8 @@ class _TTLCache:
 
 
 class Warehouse:
+    """Executes already-validated SQL on BigQuery within cost and time limits."""
+
     def __init__(
         self,
         client: bigquery.Client,
@@ -132,7 +133,7 @@ class Warehouse:
         needed = dry_run.total_bytes_processed or 0
         if needed > self.max_query_bytes:
             emit("query_too_expensive", logging.WARNING, bytes=needed, limit=self.max_query_bytes)
-            raise QueryTooExpensive(needed, self.max_query_bytes)
+            raise QueryTooExpensive(f"Query would scan {needed:,} bytes; the limit is {self.max_query_bytes:,}.")
 
         job = self.client.query(
             sql,
@@ -141,8 +142,10 @@ class Warehouse:
         )
         try:
             df = job.result(timeout=self.timeout_s, retry=api_retry).to_dataframe()
-            emit("bigquery_query", bytes=needed, cached=False, rows=len(df))
+            emit("bigquery_query", bytes=needed, bytes_billed=job.total_bytes_billed, job_id=job.job_id,
+                 cached=False, rows=len(df))
             return df
         except TimeoutError:
             job.cancel()  # stop paying for a result nobody will read
-            raise
+            emit("query_timed_out", logging.WARNING, job_id=job.job_id, seconds=self.timeout_s)
+            raise QueryTooExpensive(f"Query did not finish within {self.timeout_s:.0f} seconds.") from None

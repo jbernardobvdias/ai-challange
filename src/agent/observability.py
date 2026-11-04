@@ -17,7 +17,7 @@ import uuid
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +49,12 @@ def _clean(value: Any) -> Any:
     return _clean(str(value))
 
 
+def current_trace_id() -> str | None:
+    """The ID of the trace being recorded, if any."""
+    trace = _current.get()
+    return trace.trace_id if trace else None
+
+
 def emit(name: str, level: int = logging.INFO, **attrs: Any) -> None:
     """Record a domain event on the current trace and in the log."""
     attrs = _clean(attrs)
@@ -64,10 +70,12 @@ class JsonLogFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         trace = _current.get()
         entry = {
-            "ts": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+            "ts": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "trace_id": trace.trace_id if trace else None,
+            "session_id": trace.session_id if trace else None,
+            "user_id": trace.user_id if trace else None,
             "message": _clean(record.getMessage()),
         }
         if hasattr(record, "attrs"):
@@ -77,14 +85,15 @@ class JsonLogFormatter(logging.Formatter):
         return json.dumps(entry, default=str)
 
 
-def setup_logging(log_dir: Path) -> None:
+def setup_logging(log_dir: Path, level: str = "INFO") -> None:
+    """Send logs to a JSON file in log_dir."""
     log_dir.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(log_dir / "agent.log")
     handler.setFormatter(JsonLogFormatter())
     root = logging.getLogger()
     root.addHandler(handler)
     root.setLevel(logging.WARNING)
-    logging.getLogger("agent").setLevel(logging.INFO)
+    logging.getLogger("agent").setLevel(level)
 
 
 def _message_text(message: BaseMessage) -> str:
@@ -206,7 +215,7 @@ class TurnTrace:
 
     def __enter__(self) -> "TurnTrace":
         self._started = time.monotonic()
-        self._started_at = datetime.now(timezone.utc).isoformat()
+        self._started_at = datetime.now(UTC).isoformat()
         self._token = _current.set(self)
         return self
 
@@ -258,6 +267,8 @@ class TurnTrace:
 
 
 class Telemetry:
+    """Stores traces and feedback as JSON lines."""
+
     def __init__(self, log_dir: Path) -> None:
         log_dir.mkdir(parents=True, exist_ok=True)
         self.path = log_dir / "traces.jsonl"
@@ -279,7 +290,7 @@ class Telemetry:
     def record_feedback(self, trace_id: str, score: str, comment: str = "") -> None:
         record = _clean({
             "type": "feedback", "trace_id": trace_id, "score": score, "comment": comment,
-            "at": datetime.now(timezone.utc).isoformat(),
+            "at": datetime.now(UTC).isoformat(),
         })
         self.session_feedback.append(record)
         self._append(record)
@@ -322,6 +333,8 @@ def summarize(turns: list[dict[str, Any]], feedback: list[dict[str, Any]] = ()) 
             [s["status"] for s in t["spans"] if s["kind"] == "tool" and s["name"] == "run_sql"] for t in turns
         ) if statuses
     ]
+    corrected = [s for s in sql_turns if s[0] != "ok" and "ok" in s]
+    failed_first = [s for s in sql_turns if s[0] != "ok"]
     checks = [e for e in events if e["name"] == "input_checked"]
     count = Counter(e["name"] for e in events)
     time_by_kind: Counter = Counter()
@@ -337,6 +350,9 @@ def summarize(turns: list[dict[str, Any]], feedback: list[dict[str, Any]] = ()) 
         "llm_calls": len(llm),
         "llm_calls_by_model": dict(Counter(s["name"] for s in llm)),
         "llm_time_ms": sum(s["duration_ms"] for s in llm),
+        "llm_latency_p50_ms": _percentile([s["duration_ms"] for s in llm], 0.5),
+        "llm_latency_p95_ms": _percentile([s["duration_ms"] for s in llm], 0.95),
+        "tokens_per_turn": round(sum(s.get("total_tokens", 0) for s in llm) / len(turns)) if turns else 0,
         "llm_errors": sum(s["status"] == "error" for s in llm),
         "tokens": sum(s.get("total_tokens", 0) for s in llm),
         "fallback_answers": count["fallback_used"],
@@ -347,8 +363,14 @@ def summarize(turns: list[dict[str, Any]], feedback: list[dict[str, Any]] = ()) 
         "sql_first_try_success": (
             sum(statuses[0] == "ok" for statuses in sql_turns) / len(sql_turns) if sql_turns else None
         ),
+        "self_correction_success": len(corrected) / len(failed_first) if failed_first else None,
+        "sql_empty_rate": sum(s["status"] == "empty" for s in sql) / len(sql) if sql else None,
+        "sql_attempts_per_turn": round(len(sql) / len(sql_turns), 2) if sql_turns else None,
         "sql_time_ms": sum(s["duration_ms"] for s in sql),
+        "sql_latency_p50_ms": _percentile([s["duration_ms"] for s in sql], 0.5),
+        "sql_latency_p95_ms": _percentile([s["duration_ms"] for s in sql], 0.95),
         "bytes_scanned": sum(e["bytes"] for e in queries if not e["cached"]),
+        "bytes_per_turn": round(sum(e["bytes"] for e in queries if not e["cached"]) / len(turns)) if turns else 0,
         "cache_hits": sum(e["cached"] for e in queries),
         "input_blocked": dict(Counter(e["category"] for e in checks if e["category"] != "allowed")),
         "classifier_unavailable": sum(e["source"] == "classifier_unavailable" for e in checks),

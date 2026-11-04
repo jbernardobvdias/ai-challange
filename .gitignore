@@ -6,3 +6,9 @@ __pycache__/
 logs/
 *.db
 data/golden_embeddings.json
+venv/
+.ruff_cache/
+*.log
+*credentials*.json
+*service-account*.json
+*service_account*.json

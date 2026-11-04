@@ -14,5 +14,12 @@ retail-agent = "agent.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]  # long strings and SQL read better unbroken
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

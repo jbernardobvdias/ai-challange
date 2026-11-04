@@ -13,6 +13,8 @@ from agent.schema import Schema
     ("Lives at 742 Evergreen Terrace Road", "street_address"),
     ("Lives at 12 Main St.", "street_address"),
     ("Located at 37.7749, -122.4194", "coordinates"),
+    ("Name: Jane Doe", "person_name"),
+    ("Contact Mrs. Doe today", "person_name"),
 ])
 def test_pii_is_redacted(text, kind):
     clean, found = scrub_text(text)
@@ -27,13 +29,16 @@ def test_pii_is_redacted(text, kind):
     "month,revenue\n2026-08,314190.70\n2026-09,360788.19",
     "Email is the third largest traffic source",
     "Order 1234567890 shipped",
+    "Brand name: Calvin Klein",
+    "Customer 3fa9c1 spent the most",
+    "Dr. Martens is a top brand",
 ])
 def test_business_text_is_untouched(text):
     assert scrub_text(text) == (text, {})
 
 
 def test_sensitive_result_columns_are_dropped():
-    df = pd.DataFrame({"user_id": [1], "EMAIL": ["a"], "state": ["CA"], "total": [5.0]})
+    df = pd.DataFrame({"user_id": ["3fa9"], "EMAIL": ["a"], "state": ["CA"], "total": [5.0]})
     clean, dropped = drop_sensitive_columns(df, Schema())
-    assert list(clean.columns) == ["state", "total"]
-    assert sorted(dropped) == ["EMAIL", "user_id"]
+    assert list(clean.columns) == ["user_id", "state", "total"]  # keys are already hashed by the guard
+    assert dropped == ["EMAIL"]

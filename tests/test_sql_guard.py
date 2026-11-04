@@ -41,7 +41,7 @@ def reads_pii(sql: str) -> bool:
     ("EXPORT DATA OPTIONS(uri='gs://x/*') AS SELECT 1", "not_read_only"),
     ("EXECUTE IMMEDIATE 'DROP TABLE x'", "not_read_only"),
     (f"SELECT 1; DROP TABLE {USERS}", "multiple_statements"),
-    (f"SELECT 1; SELECT 2", "multiple_statements"),
+    ("SELECT 1; SELECT 2", "multiple_statements"),
     ("CREATE TEMP FUNCTION f() AS (1); SELECT f()", "multiple_statements"),
     ("SELECT * FROM `other-project.secrets.passwords`", "table_not_allowed"),
     ("SELECT * FROM `region-us.INFORMATION_SCHEMA.TABLES`", "table_not_allowed"),
@@ -70,7 +70,7 @@ def test_rejected(guard, sql, code):
     f"WITH a AS (SELECT * FROM {USERS}) SELECT * FROM a",
     f"SELECT * FROM (SELECT * FROM {USERS})",
     f"SELECT * FROM {ORDERS} o JOIN {USERS} u ON u.id = o.user_id",
-    f"SELECT * FROM `bigquery-public-data`.thelook_ecommerce.users",
+    "SELECT * FROM `bigquery-public-data`.thelook_ecommerce.users",
     f"SELECT 1 UNION ALL SELECT id FROM {USERS}",
     f"WITH users AS (SELECT * FROM {USERS}) SELECT * FROM users",
     f"SELECT state FROM {USERS} WHERE id IN (SELECT id FROM {USERS})",
@@ -101,7 +101,7 @@ def test_every_table_is_limited_to_the_users_products(guard, sql):
 def test_scope_values_are_escaped(guard):
     scope = ProductScope((("brand", ("Levi's", "x') OR TRUE --")),))
     tree = sqlglot.parse_one(guard.check(f"SELECT brand FROM {PRODUCTS}", scope), dialect="bigquery")
-    literals = {l.this for l in tree.find_all(exp.Literal)}
+    literals = {lit.this for lit in tree.find_all(exp.Literal)}
     assert {"Levi's", "x') OR TRUE --"} <= literals
     assert not list(tree.find_all(exp.Or))
 
@@ -134,7 +134,26 @@ def test_comments_are_not_passed_on(guard):
     f"SELECT FORMAT_TIMESTAMP('%Y-%m', created_at) m, SUM(sale_price) r FROM {ITEMS} GROUP BY 1 ORDER BY 1",
     f"SELECT p.category, SAFE_DIVIDE(SUM(i.sale_price), COUNT(DISTINCT i.order_id)) FROM {ITEMS} i JOIN {PRODUCTS} p ON p.id = i.product_id GROUP BY 1",
     f"SELECT DATE_TRUNC(DATE(created_at), MONTH) d FROM {ORDERS} QUALIFY ROW_NUMBER() OVER (PARTITION BY status ORDER BY created_at) = 1",
-    f"SELECT d FROM UNNEST(GENERATE_DATE_ARRAY('2024-01-01', '2024-02-01')) d",
+    "SELECT d FROM UNNEST(GENERATE_DATE_ARRAY('2024-01-01', '2024-02-01')) d",
 ])
 def test_normal_analytics_queries_pass(guard, sql):
     assert guard.check(sql, JEANS)
+
+
+def test_customer_keys_never_leave_bigquery_raw(guard):
+    safe = guard.check(f"SELECT id AS x FROM {USERS}", ALL)
+    assert "SHA256" in safe
+    assert "SHA256" in guard.check(f"SELECT user_id FROM {ORDERS}", ALL)
+    assert "SHA256" in guard.check(f"SELECT user_id FROM {ITEMS}", ALL)
+
+
+def test_other_ids_stay_usable(guard):
+    assert "SHA256" not in guard.check(f"SELECT id, category FROM {PRODUCTS}", ALL)
+
+
+def test_keys_are_salted_per_guard():
+    schema = Schema()
+    first = SqlGuard(schema, key_salt="one").check(f"SELECT id FROM {USERS}", ALL)
+    assert "'one'" in first
+    assert "'one'" not in SqlGuard(schema, key_salt="two").check(f"SELECT id FROM {USERS}", ALL)
+    assert SqlGuard(schema)._key_salt != SqlGuard(schema)._key_salt

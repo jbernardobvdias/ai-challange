@@ -76,6 +76,8 @@ Message to classify:
 
 
 class Classification(BaseModel):
+    """The classifier's answer."""
+
     category: Literal["allowed", "off_topic", "injection", "pii_request"] = Field(
         description="The single best category for the message."
     )
@@ -83,6 +85,8 @@ class Classification(BaseModel):
 
 @dataclass(frozen=True)
 class Verdict:
+    """The outcome of screening one message."""
+
     category: Category
     source: str  # "rules", "classifier" or "classifier_unavailable"
 
@@ -92,6 +96,8 @@ class Verdict:
 
 
 class InputGuard:
+    """Screens messages with rules, then the classifier."""
+
     def __init__(self, classifier: Runnable | None) -> None:
         self.classifier = classifier
 

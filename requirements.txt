@@ -22,8 +22,9 @@ prompt_toolkit>=3.0,<4
 python-dotenv>=1.0,<2
 pyyaml>=6.0,<7
 
-# Tests
+# Tests and lint
 pytest>=8.0,<10
+ruff>=0.6,<1
 
 # Install the project itself (src/agent) in editable mode
 -e .

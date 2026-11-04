@@ -96,8 +96,8 @@ def test_unknown_user_cannot_run_queries(schema):
 
 
 def test_results_are_filtered_before_the_model_sees_them(schema):
-    df = pd.DataFrame({"user_id": [7], "note": ["write to a@b.com"], "total": [1.0]})
+    df = pd.DataFrame({"email": ["x"], "note": ["write to a@b.com"], "total": [1.0]})
     result = run_sql(FakeRunner(df), schema)
     assert result["columns"] == ["note", "total"]
     assert "a@b.com" not in result["rows_csv"]
-    assert result["removed_columns"] == ["user_id"]
+    assert result["removed_columns"] == ["email"]

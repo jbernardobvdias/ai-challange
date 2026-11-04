@@ -1,6 +1,7 @@
 """The graph's safety wiring, using a scripted model instead of Gemini."""
 import json
 import tempfile
+import uuid
 from functools import partial
 from pathlib import Path
 
@@ -47,7 +48,7 @@ class RecordingRunner:
 
 
 def sql_call(sql):
-    return AIMessage("", tool_calls=[{"name": "run_sql", "args": {"sql": sql, "purpose": "x"}, "id": "c1"}])
+    return AIMessage("", tool_calls=[{"name": "run_sql", "args": {"sql": sql, "purpose": "x"}, "id": uuid.uuid4().hex}])
 
 
 def temp_store():
@@ -171,9 +172,17 @@ def test_model_fixes_its_query_after_a_bigquery_error():
 
 def test_repeated_failures_stop_without_another_model_call():
     runner = FlakyRunner(*[BadRequest("nope")] * 3)
-    llm = ScriptedLLM(*[sql_call(GOOD_SQL) for _ in range(3)])
+    llm = ScriptedLLM(*[sql_call(f"{GOOD_SQL} LIMIT {i}") for i in range(1, 4)])
     messages = ask(make_resilient_agent(llm, runner), "Orders?")
     assert len(llm.calls) == 3 and len(runner.queries) == 3
+    assert "after several attempts" in messages[-1].text
+
+
+def test_resending_the_same_failed_sql_stops_at_once():
+    runner = FlakyRunner(*[BadRequest("nope")] * 3)
+    llm = ScriptedLLM(sql_call(GOOD_SQL), sql_call(f"  {GOOD_SQL}\n"))
+    messages = ask(make_resilient_agent(llm, runner), "Orders?")
+    assert len(llm.calls) == 2
     assert "after several attempts" in messages[-1].text
 
 
@@ -233,7 +242,7 @@ def test_all_null_aggregate_counts_as_empty():
 
 
 def test_too_expensive_query_asks_the_model_to_narrow_it():
-    runner = FlakyRunner(QueryTooExpensive(5, 1), ROWS)
+    runner = FlakyRunner(QueryTooExpensive("Query would scan 5 bytes; the limit is 1."), ROWS)
     llm = ScriptedLLM(sql_call(GOOD_SQL), sql_call(GOOD_SQL), AIMessage("Done."))
     messages = ask(make_resilient_agent(llm, runner), "Orders?")
     first = json.loads(next(m for m in messages if isinstance(m, ToolMessage)).content)

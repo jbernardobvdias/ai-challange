@@ -1,6 +1,5 @@
 import pytest
 from langchain_core.messages import AIMessage
-from langchain_core.runnables import RunnableLambda
 
 from agent.llm import ModelChain, ModelsUnavailable
 from agent.resilience import CircuitBreaker
@@ -88,3 +87,50 @@ def test_input_guard_stops_waiting_on_a_failing_classifier():
 def test_input_guard_uses_a_healthy_classifier():
     guard = InputGuard(ModelChain([link(Model(Classification(category="off_topic")))]))
     assert guard.check("Write a poem").category == "off_topic"
+
+
+RATE_LIMITED = Exception("429 RESOURCE_EXHAUSTED {'retryDelay': '30s'}")
+DAILY_LIMIT = Exception("429 RESOURCE_EXHAUSTED {'retryDelay': '54000s'}")
+
+
+def test_last_model_waits_out_a_short_rate_limit():
+    slept, model = [], Model(RATE_LIMITED, OK)
+    chain = ModelChain([link(model)], max_quota_wait_s=45, sleep=slept.append)
+    assert chain.invoke("q") is OK
+    assert slept == [30] and model.calls == 2
+
+
+def test_rate_limit_is_waited_out_only_once():
+    slept, model = [], Model(RATE_LIMITED)
+    chain = ModelChain([link(model)], max_quota_wait_s=45, sleep=slept.append)
+    with pytest.raises(ModelsUnavailable):
+        chain.invoke("q")
+    assert slept == [30] and model.calls == 2
+
+
+def test_daily_limit_is_not_waited_for():
+    slept = []
+    chain = ModelChain([link(Model(DAILY_LIMIT))], max_quota_wait_s=45, sleep=slept.append)
+    with pytest.raises(ModelsUnavailable):
+        chain.invoke("q")
+    assert slept == []
+
+
+def test_primary_moves_to_the_fallback_rather_than_waiting():
+    slept, primary, fallback = [], Model(RATE_LIMITED), Model(OK)
+    chain = ModelChain([link(primary), link(fallback)], max_quota_wait_s=45, sleep=slept.append)
+    assert chain.invoke("q") is OK
+    assert slept == [] and primary.calls == 1
+
+
+def test_classifier_chain_does_not_wait_by_default():
+    slept, model = [], Model(RATE_LIMITED)
+    with pytest.raises(ModelsUnavailable):
+        ModelChain([link(model)], sleep=slept.append).invoke("q")
+    assert slept == []
+
+
+def test_failure_then_empty_response_is_not_treated_as_success():
+    primary, fallback = Model(OVERLOADED), Model(AIMessage(""))
+    with pytest.raises(ModelsUnavailable):
+        ModelChain([link(primary), link(fallback)]).invoke("q")

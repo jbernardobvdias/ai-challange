@@ -47,6 +47,7 @@ def _output_detail(span: dict[str, Any]) -> str:
 
 
 def render_trace(trace: dict[str, Any]) -> RenderableType:
+    """A timeline of one turn: every step, its timing and status, and what went wrong."""
     timeline = Table(box=box.SIMPLE, show_edge=False, expand=True)
     timeline.add_column("At", justify="right", no_wrap=True)
     timeline.add_column("Took", justify="right", no_wrap=True)
@@ -93,7 +94,10 @@ def _fmt(value: Any) -> str:
 
 
 def render_stats(stats: dict[str, Any], title: str) -> RenderableType:
-    first_try = stats["sql_first_try_success"]
+    """The output of summarize() as a table."""
+    def percent(value: float | None) -> str | None:
+        return f"{value:.0%}" if value is not None else None
+
     rows = [
         ("Reliability", [
             ("Turns", stats["turns"]),
@@ -101,20 +105,27 @@ def render_stats(stats: dict[str, Any], title: str) -> RenderableType:
         ]),
         ("Latency", [
             ("p50 / p95", f"{_seconds(stats['latency_p50_ms'])} / {_seconds(stats['latency_p95_ms'])}"),
+            ("Per model call p50 / p95", f"{_seconds(stats['llm_latency_p50_ms'])} / {_seconds(stats['llm_latency_p95_ms'])}"),
+            ("Per SQL call p50 / p95", f"{_seconds(stats['sql_latency_p50_ms'])} / {_seconds(stats['sql_latency_p95_ms'])}"),
             ("Time in model calls", _seconds(stats["llm_time_ms"])),
             ("Time in SQL tool", _seconds(stats["sql_time_ms"])),
         ]),
         ("Models", [
             ("Calls by model", stats["llm_calls_by_model"]),
             ("Tokens", stats["tokens"]),
+            ("Tokens per turn", stats["tokens_per_turn"]),
             ("Failures by kind", stats["model_failures_by_kind"]),
             ("Answers from fallback", stats["fallback_answers"]),
             ("Circuits opened", stats["circuits_opened"]),
         ]),
         ("SQL", [
             ("Queries by status", stats["sql_by_status"]),
-            ("First-try success", f"{first_try:.0%}" if first_try is not None else None),
+            ("First-try success", percent(stats["sql_first_try_success"])),
+            ("Self-correction success", percent(stats["self_correction_success"])),
+            ("Attempts per turn with SQL", stats["sql_attempts_per_turn"]),
+            ("Empty-result rate", percent(stats["sql_empty_rate"])),
             ("Bytes scanned", stats["bytes_scanned"]),
+            ("Bytes per turn", stats["bytes_per_turn"]),
             ("Cache hits", stats["cache_hits"]),
         ]),
         ("Safety", [
