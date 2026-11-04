@@ -1,6 +1,7 @@
 """The graph's safety wiring, using a scripted model instead of Gemini."""
 import json
 import tempfile
+from functools import partial
 from pathlib import Path
 
 import pandas as pd
@@ -12,11 +13,13 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from agent.graph import build_graph
 from agent.llm import ModelsUnavailable
+from agent.persona import Persona
 from agent.prompts import build_system_prompt
 from agent.resilience import TurnLimits
 from agent.safety.input_guard import Classification, InputGuard
 from agent.safety.sql_guard import SqlGuard
 from agent.schema import Schema
+from agent.storage.profiles import ProfileStore
 from agent.storage.reports_store import ReportStore
 from agent.tools.sql import make_sql_tools
 from agent.users import UserDirectory
@@ -51,12 +54,16 @@ def temp_store():
     return ReportStore(Path(tempfile.mkdtemp()) / "test.db")
 
 
+def temp_profiles():
+    return ProfileStore(Path(tempfile.mkdtemp()) / "test.db")
+
+
 def make_agent(llm, runner=None, category="allowed"):
     schema, users = Schema(), UserDirectory()
     tools = make_sql_tools(runner or RecordingRunner(), schema, SqlGuard(schema), users, 50)
     guard = InputGuard(RunnableLambda(lambda _: Classification(category=category)))
     return build_graph(
-        RunnableLambda(llm.invoke), tools, lambda u: build_system_prompt(schema, u), guard, users, InMemorySaver(),
+        RunnableLambda(llm.invoke), tools, partial(build_system_prompt, schema, Persona(), temp_profiles()), guard, users, InMemorySaver(),
         temp_store(),
     )
 
@@ -145,7 +152,7 @@ def make_resilient_agent(llm, runner, summary=None, **graph_kwargs):
     tools = make_sql_tools(runner, schema, SqlGuard(schema), users, 50)
     guard = InputGuard(RunnableLambda(lambda _: Classification(category="allowed")))
     return build_graph(
-        RunnableLambda(llm.invoke), tools, lambda u: build_system_prompt(schema, u), guard, users, InMemorySaver(),
+        RunnableLambda(llm.invoke), tools, partial(build_system_prompt, schema, Persona(), temp_profiles()), guard, users, InMemorySaver(),
         temp_store(), summary_llm=summary, **graph_kwargs,
     )
 

@@ -1,25 +1,29 @@
 # Data
-google-cloud-bigquery>=3.25
-db-dtypes>=1.2          # required by BigQuery .to_dataframe()
-pandas>=2.2
+google-cloud-bigquery>=3.25,<4
+db-dtypes>=1.2,<2       # required by BigQuery .to_dataframe()
+pandas>=2.2,<4
 
 # LLM + agent framework
-google-genai>=1.0
-langgraph>=0.2
-langchain-google-genai>=2.0
+google-genai>=2.0,<3
+langgraph>=1.2,<2
+langchain-core>=1.7,<2
+langchain-google-genai>=4.4,<5
 
 # Safety / resilience
-sqlglot>=25.0
-tenacity>=8.5
+sqlglot>=30.0,<31
+tenacity>=8.5,<10
+requests>=2.32,<3
+httpx>=0.27,<1
+pydantic>=2.7,<3
 
 # CLI + config
-rich>=13.7
-prompt_toolkit>=3.0
-python-dotenv>=1.0
-pyyaml>=6.0
+rich>=13.7,<16
+prompt_toolkit>=3.0,<4
+python-dotenv>=1.0,<2
+pyyaml>=6.0,<7
 
 # Tests
-pytest>=8.0
+pytest>=8.0,<10
 
 # Install the project itself (src/agent) in editable mode
 -e .

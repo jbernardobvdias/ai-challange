@@ -1,0 +1,7 @@
+{
+  "id": "acquisition_channels",
+  "question": "Which marketing channels bring the most valuable customers?",
+  "interpretation": "Value means spend per customer who bought, not sign-ups. Include the share of sign-ups who ever bought. traffic_source is the channel recorded at sign-up. There is no marketing spend data, so return on spend cannot be calculated: say so.",
+  "sql": "WITH spend AS (\n  SELECT user_id, SUM(sale_price) AS total_spend\n  FROM `bigquery-public-data.thelook_ecommerce.order_items`\n  WHERE status NOT IN ('Cancelled', 'Returned')\n  GROUP BY 1\n)\nSELECT u.traffic_source,\n  COUNT(*) AS signups,\n  COUNT(s.user_id) AS buyers,\n  ROUND(SAFE_DIVIDE(COUNT(s.user_id), COUNT(*)), 3) AS conversion,\n  ROUND(AVG(s.total_spend), 2) AS spend_per_buyer\nFROM `bigquery-public-data.thelook_ecommerce.users` u\nLEFT JOIN spend s ON s.user_id = u.id\nGROUP BY 1\nORDER BY spend_per_buyer DESC",
+  "report_guidance": "Compare channels on conversion and spend per buyer. A channel with few sign-ups but high value is a different recommendation from a big channel with low value."
+}

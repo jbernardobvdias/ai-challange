@@ -147,12 +147,12 @@ Each user turn executes this state graph inside `agent-api`. Nodes in **bold** a
 
 ```mermaid
 flowchart TD
-    START([User message]) --> LOAD["<b>load_context</b><br/>identity · entitlements · persona<br/>user prefs · schema · golden trios (RAG)"]
-    LOAD --> IG{"<b>input_guard</b><br/>in scope? injection? PII request?"}
+    START([User message]) --> IG{"<b>input_guard</b><br/>in scope? injection? PII request?"}
     IG -- "blocked" --> REFUSE["<b>refuse</b><br/>polite, scoped message"]
-    IG -- "ok" --> AGENT["agent (Gemini)<br/>plan · choose tools · synthesize"]
+    IG -- "ok" --> EXAMPLES["<b>load_examples</b><br/>golden trios similar to the question"]
+    EXAMPLES --> AGENT["agent (Gemini)<br/>plan · choose tools · synthesize"]
 
-    AGENT -- "tool calls" --> TOOLS["<b>tools</b><br/>describe_schema · run_sql<br/>search_golden_trios · save_report<br/>list_reports · get_report · propose_delete<br/>restore_deleted_reports"]
+    AGENT -- "tool calls" --> TOOLS["<b>tools</b><br/>describe_schema · run_sql<br/>search_golden_trios · save_report<br/>list_reports · get_report · propose_delete<br/>restore_deleted_reports · remember_preference"]
     TOOLS -- "observation<br/>(rows / structured error)" --> AGENT
 
     TOOLS -- "propose_delete returned<br/>pending action" --> CONFIRM["<b>confirm_delete</b><br/>interrupt() → show exact list<br/>wait for user decision"]
@@ -398,8 +398,9 @@ The prototype keeps the same graph, tools and guard logic, and swaps managed ser
 | Output PII check | DLP | Regex scrubber |
 | Conversation state | Postgres checkpointer | In-memory checkpointer (a conversation ends when the CLI exits; saved reports remain) |
 | Saved reports, audit log | Postgres | SQLite (`data/app.db`, created on first run) |
-| Golden trios | GCS + pgvector | `data/golden_trios/*.json` + in-memory similarity *(stretch)* |
-| Persona | `prompt_versions` + admin console | `config/persona.yaml`, re-read every turn *(stretch)* |
+| Golden trios | GCS + pgvector | `data/golden_trios/*.json` + in-memory similarity, cached embeddings |
+| Persona | `prompt_versions` + admin console | `config/persona.yaml`, re-read on every model call |
+| User preferences | `user_profiles` | `user_preferences` table in `data/app.db` (explicit preferences only) |
 | Observability | Cloud Logging/Trace/Monitoring + Langfuse | `logs/traces.jsonl` and JSON `logs/agent.log`, `/trace`, `/stats`, `/good`, `/bad` CLI commands |
 
 ```mermaid

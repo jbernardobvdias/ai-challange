@@ -1,0 +1,7 @@
+{
+  "id": "state_underspend",
+  "question": "Why are users in California underspending compared to users in Texas?",
+  "interpretation": "\"Underspending\" means spend per buyer, not total revenue, because total revenue mostly reflects population. Decompose spend per buyer into orders per buyer and average order value, then compare the category mix. Only compare states within one country.",
+  "sql": "SELECT u.state,\n  COUNT(DISTINCT i.user_id) AS buyers,\n  COUNT(DISTINCT i.order_id) AS orders,\n  ROUND(SUM(i.sale_price), 2) AS revenue,\n  ROUND(SAFE_DIVIDE(SUM(i.sale_price), COUNT(DISTINCT i.user_id)), 2) AS spend_per_buyer,\n  ROUND(SAFE_DIVIDE(COUNT(DISTINCT i.order_id), COUNT(DISTINCT i.user_id)), 2) AS orders_per_buyer,\n  ROUND(SAFE_DIVIDE(SUM(i.sale_price), COUNT(DISTINCT i.order_id)), 2) AS avg_order_value\nFROM `bigquery-public-data.thelook_ecommerce.order_items` i\nJOIN `bigquery-public-data.thelook_ecommerce.users` u ON u.id = i.user_id\nWHERE u.country = 'United States' AND u.state IN ('California', 'Texas')\n  AND i.status NOT IN ('Cancelled', 'Returned')\nGROUP BY 1",
+  "report_guidance": "Say first whether the gap is real and how large it is. Then say which component explains it: frequency, basket size or mix. Small gaps should be called small. Action items match the component: frequency points to retention, basket size to bundles or thresholds."
+}

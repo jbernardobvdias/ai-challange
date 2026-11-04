@@ -1,6 +1,6 @@
 # Technical Design — Retail Data Analysis Chat Assistant
 
-Companion to [architecture.md](architecture.md) (diagrams and flows). This document explains **why** each building block was chosen and how the system behaves in production. The requirement-by-requirement walkthrough is in [requirements.md](requirements.md) *(written in a later step)*.
+Companion to [architecture.md](architecture.md) (diagrams and flows). This document explains **why** each building block was chosen and how the system behaves in production. The requirement-by-requirement walkthrough is in [requirements.md](requirements.md).
 
 **Contents**
 1. [Guiding principles](#1-guiding-principles)
@@ -58,7 +58,7 @@ Companion to [architecture.md](architecture.md) (diagrams and flows). This docum
 |------|-------|-----|
 | Main agent (planning, SQL, analysis, reports) | **Gemini 3.8 Flash** | Strong tool calling and SQL generation, long context (schema + few-shot trios + history fit easily), low latency and cost for interactive chat. |
 | Fallback + cheap steps (input classification, preference extraction) | **Gemini 3.5 Flash-Lite** | Faster and cheaper; used automatically when the primary model is rate-limited or unavailable. |
-| Embeddings (golden trios) | **Gemini embeddings** | Same provider and auth; good multilingual semantic retrieval. |
+| Embeddings (golden trios) | **`gemini-embedding-001`** | Same provider and auth; returned one vector per input in testing, which the newer embedding models did not. |
 
 - **Production** calls Gemini through **Vertex AI** (IAM auth, regional endpoints, enterprise data terms). The **prototype** uses a Gemini API key from Google AI Studio; the code path is the same SDK (`google-genai`), so switching is configuration only.
 - Models are set by configuration (`GEMINI_MODEL`, `GEMINI_FALLBACK_MODEL`), not hard-coded, so we can upgrade or A/B test without code changes.

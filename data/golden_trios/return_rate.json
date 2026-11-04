@@ -1,0 +1,7 @@
+{
+  "id": "return_rate",
+  "question": "Which products have the worst return rates?",
+  "interpretation": "Return rate = returned items / items not cancelled. Require a minimum volume, otherwise products with two sales dominate the ranking. Rank categories and brands before individual products.",
+  "sql": "SELECT p.category, p.brand,\n  COUNTIF(i.status != 'Cancelled') AS items,\n  COUNTIF(i.status = 'Returned') AS returned,\n  ROUND(SAFE_DIVIDE(COUNTIF(i.status = 'Returned'), COUNTIF(i.status != 'Cancelled')), 3) AS return_rate\nFROM `bigquery-public-data.thelook_ecommerce.order_items` i\nJOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = i.product_id\nGROUP BY 1, 2\nHAVING items >= 30\nORDER BY return_rate DESC\nLIMIT 20",
+  "report_guidance": "Rank with volumes shown and state the minimum volume used. Note that recent orders may not have been returned yet, so the latest weeks understate the rate."
+}

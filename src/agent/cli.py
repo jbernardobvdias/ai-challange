@@ -235,6 +235,8 @@ def _tool_label(call: dict) -> str:
         "get_report": "Opening the report",
         "propose_delete": "Finding the reports to delete",
         "restore_deleted_reports": "Restoring your reports",
+        "remember_preference": "Remembering your preference",
+        "forget_preferences": "Forgetting your preferences",
     }
     if call["name"] in labels:
         return labels[call["name"]]

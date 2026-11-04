@@ -1,0 +1,7 @@
+{
+  "id": "product_compare",
+  "question": "Compare the performance of product category X and Y and explain why they perform differently",
+  "interpretation": "Compare on revenue, units, average price, gross margin and return rate. Revenue alone hides the story: a category can win on revenue and lose on margin. Use net figures for revenue, but include returned items when computing the return rate.",
+  "sql": "SELECT p.category,\n  COUNT(*) AS items,\n  ROUND(SUM(IF(i.status NOT IN ('Cancelled', 'Returned'), i.sale_price, 0)), 2) AS net_revenue,\n  ROUND(AVG(i.sale_price), 2) AS avg_price,\n  ROUND(SAFE_DIVIDE(SUM(i.sale_price - p.cost), SUM(i.sale_price)), 3) AS gross_margin,\n  ROUND(SAFE_DIVIDE(COUNTIF(i.status = 'Returned'), COUNTIF(i.status != 'Cancelled')), 3) AS return_rate\nFROM `bigquery-public-data.thelook_ecommerce.order_items` i\nJOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = i.product_id\nWHERE p.category IN ('Jeans', 'Swim')\nGROUP BY 1",
+  "report_guidance": "Lead with which performs better and on which measure. Separate what the data shows from possible causes. Causes the data cannot show, such as fit or customer motivation, are labelled as hypotheses, with a suggestion for how to test them."
+}

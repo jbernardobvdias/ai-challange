@@ -1,0 +1,7 @@
+{
+  "id": "monthly_revenue",
+  "question": "What is our monthly revenue?",
+  "interpretation": "Revenue means net revenue: SUM(sale_price) on order_items excluding Cancelled and Returned. Use complete months only, because a partial current month looks like a collapse. Show at least 12 months so seasonality is visible.",
+  "sql": "SELECT FORMAT_DATE('%Y-%m', DATE(created_at)) AS month,\n  ROUND(SUM(sale_price), 2) AS net_revenue,\n  COUNT(DISTINCT order_id) AS orders\nFROM `bigquery-public-data.thelook_ecommerce.order_items`\nWHERE status NOT IN ('Cancelled', 'Returned')\n  AND DATE(created_at) < DATE_TRUNC(CURRENT_DATE(), MONTH)\nGROUP BY 1\nORDER BY 1 DESC\nLIMIT 12",
+  "report_guidance": "A table of months, plus one sentence on the trend. State the revenue definition. If the question is simple, do not write a full report."
+}

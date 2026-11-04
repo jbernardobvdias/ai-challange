@@ -114,7 +114,7 @@ def test_tokens_and_prompt_version_are_recorded(tmp_path):
 
 def test_every_graph_node_gets_a_timing(tmp_path):
     trace = Harness(tmp_path, fake_model(sql_call(), text("Done."))).ask("Orders?")
-    assert [s["name"] for s in spans(trace, "node")] == ["input_guard", "agent", "tools", "agent", "output_guard"]
+    assert [s["name"] for s in spans(trace, "node")] == ["input_guard", "load_examples", "agent", "tools", "agent", "output_guard"]
     assert all(s["duration_ms"] >= 0 for s in trace["spans"])
 
 

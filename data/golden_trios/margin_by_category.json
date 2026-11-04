@@ -1,0 +1,7 @@
+{
+  "id": "margin_by_category",
+  "question": "Which categories are most profitable?",
+  "interpretation": "Profit means gross margin: sale_price minus products.cost. The dataset has no shipping, marketing or overhead costs, so state that this is not net profit. Show both total margin and margin percentage, because they usually rank differently.",
+  "sql": "SELECT p.category,\n  ROUND(SUM(i.sale_price - p.cost), 2) AS gross_margin,\n  ROUND(SAFE_DIVIDE(SUM(i.sale_price - p.cost), SUM(i.sale_price)), 3) AS margin_pct\nFROM `bigquery-public-data.thelook_ecommerce.order_items` i\nJOIN `bigquery-public-data.thelook_ecommerce.products` p ON p.id = i.product_id\nWHERE i.status NOT IN ('Cancelled', 'Returned')\nGROUP BY 1\nORDER BY gross_margin DESC",
+  "report_guidance": "Table ranked by total margin, with margin percentage alongside. Call out categories that are big but thin, and small but rich."
+}

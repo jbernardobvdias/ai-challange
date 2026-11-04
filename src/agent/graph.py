@@ -1,6 +1,6 @@
 """LangGraph agent graph.
 
-    START -> input_guard -> agent <-> tools --(delete proposed)--> confirm_delete
+    START -> input_guard -> load_examples -> agent <-> tools --(delete proposed)--> confirm_delete
                  |            |         |                            |    |    |
               (blocked)       |    (budget spent or       (confirmed)|    |    |(something else:
                  |            |     warehouse down)                  v    |    | back to input_guard
@@ -21,6 +21,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import Command, interrupt
 
+from agent.golden import GoldenIndex, format_examples
 from agent.observability import emit
 from agent.resilience import (
     StopReason,
@@ -65,6 +66,7 @@ _UNCLEAR_WORDS = {"", "yes", "y", "yep", "yeah", "ok", "okay", "sure", "delete",
 
 class AgentState(MessagesState):
     blocked: bool
+    examples: str  # past expert work relevant to the current question
     approved_delete: list[int]
 
 
@@ -83,6 +85,7 @@ def build_graph(
     reports: ReportStore,
     summary_llm: Runnable | None = None,
     limits: TurnLimits = TurnLimits(),
+    golden: GoldenIndex | None = None,
 ) -> CompiledStateGraph:
 
     def check_input(state: AgentState, config: RunnableConfig) -> dict:
@@ -94,11 +97,16 @@ def build_graph(
             return {"blocked": False}
         return {"blocked": True, "messages": [AIMessage(REFUSALS[verdict.category])]}
 
+    def load_examples(state: AgentState) -> dict:
+        trios = golden.search(state["messages"][-1].text) if golden else []
+        return {"examples": format_examples(trios)}
+
     def agent(state: AgentState, config: RunnableConfig) -> dict:
         user = users.get(config["configurable"]["user_id"])
         history = close_dangling_tool_calls(state["messages"])
+        prompt = system_prompt(user) + state.get("examples", "")
         try:
-            return {"messages": [llm.invoke([SystemMessage(system_prompt(user)), *history])]}
+            return {"messages": [llm.invoke([SystemMessage(prompt), *history])]}
         except Exception as e:
             emit("models_unavailable", logging.ERROR, error=str(e)[:300])
             return {"messages": [AIMessage(MODELS_DOWN_MESSAGE)]}
@@ -175,6 +183,7 @@ def build_graph(
 
     graph = StateGraph(AgentState)
     graph.add_node("input_guard", check_input)
+    graph.add_node("load_examples", load_examples)
     graph.add_node("agent", agent)
     graph.add_node("tools", ToolNode(tools))
     graph.add_node("give_up", give_up)
@@ -183,7 +192,8 @@ def build_graph(
     graph.add_node("output_guard", check_output)
 
     graph.add_edge(START, "input_guard")
-    graph.add_conditional_edges("input_guard", lambda s: END if s["blocked"] else "agent")
+    graph.add_conditional_edges("input_guard", lambda s: END if s["blocked"] else "load_examples")
+    graph.add_edge("load_examples", "agent")
     graph.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: "output_guard"})
     graph.add_conditional_edges("tools", after_tools, ["agent", "give_up", "confirm_delete"])
     graph.add_edge("execute_delete", END)

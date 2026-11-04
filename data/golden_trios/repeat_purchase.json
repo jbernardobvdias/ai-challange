@@ -1,0 +1,7 @@
+{
+  "id": "repeat_purchase",
+  "question": "How many of our customers come back to buy again?",
+  "interpretation": "Repeat rate = customers with 2 or more non-cancelled orders / customers with at least one. Recent sign-ups have had less time to return, so compare by sign-up year.",
+  "sql": "WITH per_user AS (\n  SELECT user_id, COUNT(*) AS orders, MIN(DATE(created_at)) AS first_order\n  FROM `bigquery-public-data.thelook_ecommerce.orders`\n  WHERE status != 'Cancelled'\n  GROUP BY 1\n)\nSELECT EXTRACT(YEAR FROM first_order) AS first_order_year,\n  COUNT(*) AS customers,\n  ROUND(SAFE_DIVIDE(COUNTIF(orders >= 2), COUNT(*)), 3) AS repeat_rate\nFROM per_user\nGROUP BY 1\nORDER BY 1",
+  "report_guidance": "Give the overall rate, then the rate by first-order year, and warn that the latest cohort is not yet comparable."
+}

@@ -1,0 +1,7 @@
+{
+  "id": "top_customers",
+  "question": "Who are our top customers?",
+  "interpretation": "Top means highest net spend. Individuals must not be identified: no names, emails or customer IDs. Answer with the concentration of spend and the demographic profile of the top group instead.",
+  "sql": "WITH spend AS (\n  SELECT user_id, SUM(sale_price) AS total_spend, COUNT(DISTINCT order_id) AS orders\n  FROM `bigquery-public-data.thelook_ecommerce.order_items`\n  WHERE status NOT IN ('Cancelled', 'Returned')\n  GROUP BY 1\n), ranked AS (\n  SELECT *, NTILE(100) OVER (ORDER BY total_spend DESC) AS percentile\n  FROM spend\n)\nSELECT u.country, u.traffic_source,\n  COUNT(*) AS top_customers,\n  ROUND(AVG(r.total_spend), 2) AS avg_spend,\n  ROUND(AVG(r.orders), 2) AS avg_orders\nFROM ranked r\nJOIN `bigquery-public-data.thelook_ecommerce.users` u ON u.id = r.user_id\nWHERE r.percentile = 1\nGROUP BY 1, 2\nORDER BY top_customers DESC\nLIMIT 15",
+  "report_guidance": "Describe the top 1% as a group: share of revenue, typical spend, orders, where they come from and how they were acquired. Explain that individuals are not shown because of privacy rules."
+}

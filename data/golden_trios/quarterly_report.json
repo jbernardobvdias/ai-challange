@@ -1,0 +1,7 @@
+{
+  "id": "quarterly_report",
+  "question": "Create a report for Q1 including insights and action items for Q2",
+  "interpretation": "Quarter means calendar quarter unless stated otherwise. Use the most recent completed Q1. Always compare with the previous quarter and the same quarter a year earlier, because the business is seasonal. Run separate queries for the headline numbers, categories and channels.",
+  "sql": "SELECT DATE_TRUNC(DATE(created_at), QUARTER) AS quarter,\n  ROUND(SUM(sale_price), 2) AS net_revenue,\n  COUNT(DISTINCT order_id) AS orders,\n  COUNT(DISTINCT user_id) AS buyers,\n  ROUND(SAFE_DIVIDE(SUM(sale_price), COUNT(DISTINCT order_id)), 2) AS avg_order_value\nFROM `bigquery-public-data.thelook_ecommerce.order_items`\nWHERE status NOT IN ('Cancelled', 'Returned')\nGROUP BY 1\nORDER BY 1 DESC\nLIMIT 8",
+  "report_guidance": "Structure: executive summary, key metrics with QoQ and YoY change, what drove the change, risks, and 3 to 5 action items that each name an owner team and the metric it should move. Each action item must trace back to a finding above."
+}

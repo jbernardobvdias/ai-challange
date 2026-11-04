@@ -26,6 +26,7 @@ class Settings:
     max_result_rows: int
     db_path: Path
     log_dir: Path
+    golden_dir: Path
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -49,4 +50,5 @@ class Settings:
             max_result_rows=int(os.getenv("MAX_RESULT_ROWS", "50")),
             db_path=Path(os.getenv("APP_DB_PATH", ROOT / "data" / "app.db")),
             log_dir=Path(os.getenv("LOG_DIR", ROOT / "logs")),
+            golden_dir=Path(os.getenv("GOLDEN_DIR", ROOT / "data" / "golden_trios")),
         )
