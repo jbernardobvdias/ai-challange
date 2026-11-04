@@ -4,15 +4,12 @@ Cheap rules run first. A small LLM classifier then catches what rules miss. If t
 down the message is allowed through: this layer protects scope and cost, while personal data is
 protected separately by the SQL guard and output filters, which do not depend on any LLM.
 """
-import logging
 import re
 from dataclasses import dataclass
 from typing import Literal
 
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel, Field
-
-logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_CHARS = 4000
 
@@ -110,6 +107,5 @@ class InputGuard:
         try:
             result = self.classifier.invoke(CLASSIFIER_PROMPT.format(history=history or "(none)", message=message))
             return Verdict(result.category, "classifier")
-        except Exception as e:
-            logger.warning("input classifier unavailable, allowing message: %s", str(e)[:200])
+        except Exception:  # the reason is recorded by the model chain
             return Verdict("allowed", "classifier_unavailable")

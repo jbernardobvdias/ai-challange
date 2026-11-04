@@ -208,23 +208,19 @@ Full failure table: [docs/technical_design.md §7](docs/technical_design.md#7-er
 
 ### R7. Observability — *must implement*
 
-**Per-turn trace** (trace_id / session_id / user_id): user message, guardrail decisions, retrieved context, every LLM call (prompt, response, tokens, latency, model), every tool call (SQL, bytes scanned, rows, errors, retries), final answer, cost.
+**One trace per turn** (`logs/traces.jsonl`): user message, guard decisions, every model call (input, output, tool calls, tokens, latency, errors), every tool call (SQL, full observation, status), domain events, outcome. Personal data is scrubbed before anything is written. JSON logs (`logs/agent.log`) share the same `trace_id`.
 
-**Metrics:**
-- Success / failure rate per turn; failure reason taxonomy (SQL error, empty result, LLM error, guardrail block, timeout).
-- SQL first-try success rate; average self-correction attempts.
-- Latency (p50/p95) per node; tokens & $ per turn; BQ bytes scanned.
-- Guardrail triggers (PII blocked, injection attempts, out-of-scope).
-- Delete requests: proposed vs. confirmed vs. cancelled.
-- User feedback score.
+**In the CLI:**
+- `/trace [id]`: timeline of the last answer or a past one. Crash messages show this ID as their reference.
+- `/stats [all]`: metrics for this session or all sessions: outcomes, latency, model failures and fallbacks, SQL first-try success, bytes scanned, guard triggers, deletes, feedback.
+- `/good`, `/bad [note]`: rate the last answer.
 
-**Prototype:** structured JSON logs to `logs/` + per-turn trace files; CLI commands like `/trace` (show last turn's steps) and `/stats` (session metrics). Optional Langfuse integration.
-**Production:** OpenTelemetry → Cloud Trace, logs → Cloud Logging → BigQuery sink for analysis, Cloud Monitoring dashboards + alerts, Langfuse/LangSmith for LLM-specific deep dives.
+Metrics, proposed alerts, debugging steps and the production mapping: [docs/technical_design.md §10](docs/technical_design.md#10-observability).
 
 **Tasks:**
-- ☐ `observability.py` (logger, tracer context, metrics counters).
-- ☐ Instrument every node/tool.
-- ☐ `/trace` and `/stats` CLI commands.
+- ☑ `observability.py` (trace, one callback handler, `emit()`, metrics) and `trace_view.py` (`/trace`, `/stats`).
+- ☑ Instrument nodes, models, tools, guards, circuit breakers and BigQuery.
+- ☑ Tests through the real graph; verified live through the CLI.
 
 ### R8. Agility (Persona Management) — *design (+ easy prototype)*
 
@@ -294,7 +290,8 @@ ai-challange/
 │   │   └── input_guard.py     # scope / injection classifier
 │   ├── storage/
 │   │   └── reports_store.py   # SQLite: reports + audit log
-│   └── observability.py       # logging, tracing, metrics
+│   ├── observability.py       # traces, JSON logs, metrics
+│   └── trace_view.py          # /trace and /stats output
 ├── evals/                     # (stretch) eval questions + runner
 └── tests/                     # pytest unit tests
 ```
@@ -329,7 +326,7 @@ ai-challange/
 | 3 | Safety: SQL guard (sqlglot), PII column/output scrubbing, per-user scope, input guardrail + tests | 2 h | ☑ |
 | 4 | Resilience: SQL self-correction loop, retries/backoff/fallback, cost limits, error boundary + tests | 1 h | ☑ |
 | 5 | Saved reports + delete confirmation flow (interrupt, ownership, audit) + tests | 1.5 h | ☑ |
-| 6 | Observability: structured logs, traces, `/trace`, `/stats` | 1 h | ☐ |
+| 6 | Observability: structured logs, traces, `/trace`, `/stats` | 1 h | ☑ |
 | 7 | Stretch: persona hot-reload, golden-trio RAG, preferences memory, small eval set | 1–2 h | ☐ |
 | 8 | Final docs: requirements write-up, setup, example run, polish, publish to GitHub | 1 h | ☐ |
 

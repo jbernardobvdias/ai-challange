@@ -28,9 +28,8 @@ from google.cloud import bigquery
 from google.cloud.bigquery.retry import DEFAULT_RETRY
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
+from agent.observability import emit
 from agent.resilience import CircuitBreaker
-
-logger = logging.getLogger(__name__)
 
 _TRANSIENT = (
     BadGateway, GatewayTimeout, InternalServerError, ServiceUnavailable, TooManyRequests,
@@ -98,11 +97,15 @@ class Warehouse:
             stop=stop_after_attempt(attempts),
             wait=wait_random_exponential(multiplier=0.5, max=4),
             reraise=True,
+            before_sleep=lambda state: emit(
+                "bigquery_retry", logging.WARNING, error=str(state.outcome.exception())[:200],
+            ),
         )(self._execute)
 
     def execute_query(self, sql: str) -> pd.DataFrame:
         cached = self.cache.get(sql)
         if cached is not None:
+            emit("bigquery_query", bytes=0, cached=True)
             return cached
         if not self.breaker.allow():
             raise WarehouseUnavailable("BigQuery circuit is open")
@@ -113,7 +116,7 @@ class Warehouse:
             raise
         except Exception as e:  # outages, but also expired credentials or a disabled API
             self.breaker.record_failure()
-            logger.error("bigquery unavailable: %s", str(e)[:300])
+            emit("warehouse_unavailable", logging.ERROR, error=str(e)[:300])
             raise WarehouseUnavailable(str(e)[:300]) from e
         self.breaker.record_success()
         self.cache.put(sql, df)
@@ -128,6 +131,7 @@ class Warehouse:
         )
         needed = dry_run.total_bytes_processed or 0
         if needed > self.max_query_bytes:
+            emit("query_too_expensive", logging.WARNING, bytes=needed, limit=self.max_query_bytes)
             raise QueryTooExpensive(needed, self.max_query_bytes)
 
         job = self.client.query(
@@ -136,7 +140,9 @@ class Warehouse:
             retry=api_retry, timeout=self.timeout_s, job_retry=None,
         )
         try:
-            return job.result(timeout=self.timeout_s, retry=api_retry).to_dataframe()
+            df = job.result(timeout=self.timeout_s, retry=api_retry).to_dataframe()
+            emit("bigquery_query", bytes=needed, cached=False, rows=len(df))
+            return df
         except TimeoutError:
             job.cancel()  # stop paying for a result nobody will read
             raise

@@ -12,7 +12,7 @@ from enum import Enum
 import httpx
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
-logger = logging.getLogger(__name__)
+from agent.observability import emit
 
 
 class CircuitBreaker:
@@ -57,7 +57,7 @@ class CircuitBreaker:
 
     def _open(self, duration_s: float) -> None:
         self._open_until = self._clock() + duration_s
-        logger.warning("circuit %s open for %.0fs", self.name, duration_s)
+        emit("circuit_opened", logging.WARNING, circuit=self.name, seconds=round(duration_s))
 
 
 class ErrorKind(Enum):

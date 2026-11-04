@@ -13,6 +13,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import InjectedState
 
+from agent.observability import emit
 from agent.safety.pii import scrub_text
 from agent.storage.reports_store import Report, ReportStore
 
@@ -137,6 +138,7 @@ def make_report_tools(store: ReportStore) -> list[BaseTool]:
         if not reports:
             return json.dumps({"status": "no_matches", "message": "No saved reports of this user match. Nothing to delete."})
         store.audit(settings["user_id"], "delete_proposed", [r.id for r in reports], settings["thread_id"])
+        emit("delete_proposed", count=len(reports))
         return json.dumps({
             "status": NEEDS_CONFIRMATION,
             "reports": [_summary(r) for r in reports],

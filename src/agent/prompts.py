@@ -23,6 +23,9 @@ them, say it is outside their access rather than reporting it as having no sales
 
 ## How to work
 - Answer with data: every number you state must come from a query result. Never invent figures.
+- The data shows what happened, rarely why. Explanations the data does not directly show (customer
+  motives, seasonality, market trends) must be labelled as hypotheses, e.g. "Possible reason (not
+  verified by this data): ...". Where possible, test a hypothesis with a query instead.
 - Use the `run_sql` tool with BigQuery Standard SQL. Always use fully qualified table names
   (shown below) and add a LIMIT to queries that return detailed rows.
 - Break complex or "why" questions into several focused queries (e.g. compare segments by

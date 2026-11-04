@@ -21,6 +21,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import Command, interrupt
 
+from agent.observability import emit
 from agent.resilience import (
     StopReason,
     TurnLimits,
@@ -34,8 +35,6 @@ from agent.safety.pii import scrub_text
 from agent.storage.reports_store import ReportStore
 from agent.tools.reports import UNDO_WINDOW, pending_delete
 from agent.users import User, UserDirectory
-
-logger = logging.getLogger(__name__)
 
 HISTORY_MESSAGES = 4  # recent messages given to the input classifier for context
 HISTORY_CHARS = 300
@@ -89,10 +88,10 @@ def build_graph(
     def check_input(state: AgentState, config: RunnableConfig) -> dict:
         *previous, message = state["messages"]
         verdict = input_guard.check(message.text, _recent_history(previous))
+        emit("input_checked", logging.INFO if verdict.allowed else logging.WARNING,
+             category=verdict.category, source=verdict.source)
         if verdict.allowed:
             return {"blocked": False}
-        logger.warning("input blocked user=%s category=%s source=%s",
-                       config["configurable"]["user_id"], verdict.category, verdict.source)
         return {"blocked": True, "messages": [AIMessage(REFUSALS[verdict.category])]}
 
     def agent(state: AgentState, config: RunnableConfig) -> dict:
@@ -101,7 +100,7 @@ def build_graph(
         try:
             return {"messages": [llm.invoke([SystemMessage(system_prompt(user)), *history])]}
         except Exception as e:
-            logger.error("no model could answer: %s", str(e)[:300])
+            emit("models_unavailable", logging.ERROR, error=str(e)[:300])
             return {"messages": [AIMessage(MODELS_DOWN_MESSAGE)]}
 
     def after_tools(state: AgentState) -> str:
@@ -126,11 +125,13 @@ def build_graph(
         if word in _CONFIRM_WORDS:
             if reports.now().isoformat() > proposal["expires_at"]:
                 reports.audit(settings["user_id"], "delete_expired", ids, settings["thread_id"])
+                emit("delete_expired", count=len(ids))
                 message = "That confirmation has expired, so nothing was deleted. Ask me again if you still want to."
                 return Command(update={"messages": [AIMessage(message)]}, goto=END)
             return Command(update={"approved_delete": ids}, goto="execute_delete")
 
         reports.audit(settings["user_id"], "delete_cancelled", ids, settings["thread_id"])
+        emit("delete_cancelled", count=len(ids))
         cancelled = AIMessage("Deletion cancelled. Nothing was deleted.")
         if word in _CANCEL_WORDS:
             return Command(update={"messages": [cancelled]}, goto=END)
@@ -146,20 +147,21 @@ def build_graph(
         else:
             minutes = int(UNDO_WINDOW.total_seconds() // 60)
             titles = "\n".join(f"- {r.title}" for r in deleted)
+            emit("delete_executed", count=len(deleted))
             message = f"Deleted {len(deleted)} report(s):\n{titles}\n\nSay \"undo\" within {minutes} minutes to restore them."
         return {"approved_delete": [], "messages": [AIMessage(message)]}
 
     def give_up(state: AgentState, config: RunnableConfig) -> dict:
         turn = current_turn(state["messages"])
         reason = stop_reason(turn, limits)
-        logger.warning("turn stopped early: %s", reason.value)
+        emit("turn_stopped", logging.WARNING, reason=reason.value)
         if summary_llm is not None and "ok" in sql_statuses(turn):
             user = users.get(config["configurable"]["user_id"])
             prompt = system_prompt(user) + PARTIAL_ANSWER_INSTRUCTION
             try:
                 return {"messages": [summary_llm.invoke([SystemMessage(prompt), *state["messages"]])]}
             except Exception as e:
-                logger.error("could not summarise partial results: %s", str(e)[:300])
+                emit("partial_summary_failed", logging.ERROR, error=str(e)[:300])
         return {"messages": [AIMessage(GIVE_UP_MESSAGES[reason])]}
 
     def check_output(state: AgentState) -> dict:
@@ -167,7 +169,7 @@ def build_graph(
         clean, found = scrub_text(message.text)
         if not found:
             return {}
-        logger.warning("output scrubbed: %s", found)
+        emit("output_scrubbed", logging.WARNING, found=found)
         # Same id: replaces the message in the history, so the PII is not kept either.
         return {"messages": [AIMessage(clean, id=message.id)]}
 

@@ -25,6 +25,7 @@ class Settings:
     max_query_bytes: int
     max_result_rows: int
     db_path: Path
+    log_dir: Path
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -47,4 +48,5 @@ class Settings:
             max_query_bytes=int(os.getenv("MAX_QUERY_BYTES", str(10**9))),
             max_result_rows=int(os.getenv("MAX_RESULT_ROWS", "50")),
             db_path=Path(os.getenv("APP_DB_PATH", ROOT / "data" / "app.db")),
+            log_dir=Path(os.getenv("LOG_DIR", ROOT / "logs")),
         )

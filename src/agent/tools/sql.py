@@ -13,13 +13,12 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 
+from agent.observability import emit
 from agent.safety.pii import drop_sensitive_columns, scrub_text
 from agent.safety.sql_guard import SqlGuard, SqlRejected
 from agent.schema import Schema
 from agent.users import UserDirectory
 from agent.warehouse import QueryTooExpensive, Warehouse, WarehouseUnavailable
-
-logger = logging.getLogger(__name__)
 
 
 def _observation(status: str, **fields: Any) -> str:
@@ -56,7 +55,7 @@ def make_sql_tools(
         try:
             safe_sql = guard.check(sql, user.scope)
         except SqlRejected as e:
-            logger.warning("sql rejected user=%s code=%s: %s", user.id, e.code, e.message)
+            emit("sql_rejected", logging.WARNING, code=e.code, message=e.message)
             return _observation("rejected", error_type=e.code, message=e.message, hint=e.hint)
 
         try:
@@ -80,6 +79,8 @@ def make_sql_tools(
 
         df, dropped = drop_sensitive_columns(df, schema)
         rows_csv, redacted = scrub_text(df.head(max_rows).to_csv(index=False, float_format="%.2f"))
+        if dropped or redacted:
+            emit("result_scrubbed", logging.WARNING, removed_columns=dropped, redacted=redacted)
         return _observation(
             "ok",
             row_count=len(df),

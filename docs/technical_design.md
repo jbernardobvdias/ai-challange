@@ -12,6 +12,7 @@ Companion to [architecture.md](architecture.md) (diagrams and flows). This docum
 7. [Error handling & fallback strategies](#7-error-handling--fallback-strategies)
 8. [Extensibility](#8-extensibility)
 9. [Scaling & cost](#9-scaling--cost)
+10. [Observability](#10-observability)
 
 ---
 
@@ -141,3 +142,53 @@ Tools with side effects outside the system (email, deletion) reuse the same **pr
 - `agent-api` is stateless; Cloud Run scales horizontally on concurrent requests. Conversation state is in Postgres, so any instance can serve any turn.
 - The main cost drivers are LLM tokens and BigQuery bytes scanned, both capped per turn and tracked per user in metrics.
 - BigQuery: aggregation queries over `thelook_ecommerce` scan megabytes, well within the free tier; production tables would use partitioning/clustering on `created_at` and the guard would require a date filter on large tables.
+
+---
+
+## 10. Observability
+
+**One trace per user turn.** It holds the full correspondence, so a failure can be understood without reproducing it:
+
+| Recorded | Details |
+|----------|---------|
+| Turn | `trace_id`, session, user, question, outcome, latency, time waiting for the user, tokens |
+| Each model call | model, graph node, messages sent, last input, output, tool calls with arguments, tokens, finish reason, latency, error. The system prompt is stored as a hash, which identifies the version without repeating it. |
+| Each tool call | arguments (the SQL), full observation (rows or structured error), status, latency |
+| Each graph node | latency and status, including when paused for confirmation |
+| Domain events | input check verdict, SQL guard rejection and code, model failure and kind, fallback used, circuit opened, model skipped, BigQuery bytes and cache hit, BigQuery retry, PII scrubbed, turn stopped and why, delete proposed, executed, cancelled or expired |
+
+**How it is captured.** One LangChain callback handler records model, tool and node spans, so instrumentation isn't scattered through the code. Domain events use a single `emit()` function, which adds to the current trace (via a context variable, which also reaches tool threads) and writes a log line.
+
+**Two guarantees, both tested:**
+- *No personal data at rest:* every string is scrubbed when a trace or log line is written, including the user's question and raw model output from before the output guard.
+- *Telemetry can't break the agent:* a failure to write a trace is logged and the turn continues.
+
+### Metrics
+
+All metrics are computed from traces (`summarize()`), so there is one source of truth. Alert thresholds are proposed starting points, to be tuned on real traffic.
+
+| Group | Metric | Why it matters | Proposed alert |
+|-------|--------|----------------|----------------|
+| Reliability | Outcome per turn: `answered`, `refused`, `gave_up:<reason>`, `models_down`, `error`, `cancelled` | The headline failure taxonomy | `error` + `models_down` > 2% over 15 min |
+| Reliability | `gave_up` rate by reason | The agent is failing users without crashing | > 5% over 1 h |
+| Latency | p50 / p95 per turn; time by node, in model calls and in SQL | Shows where slow answers spend their time | p95 > 60 s over 15 min |
+| Models | Failures by kind, fallback answers, circuits opened | Provider health and degraded quality | Fallback share > 25% over 15 min |
+| Cost | Tokens by turn and model, BigQuery bytes scanned, cache hits | Cost per answer | Daily spend above budget |
+| SQL quality | First-try success, status counts | Text-to-SQL quality; a drop often follows a prompt or schema change | First-try success < 70% over 1 day |
+| Safety | Input blocked by category, classifier unavailable, SQL rejected by code, PII redactions | Attack attempts, and whether guards are firing | Any `pii_column` spike; any output PII redaction reviewed |
+| Destructive ops | Proposed, executed, cancelled, expired | A high cancel rate suggests bad matching | Executed > proposed is a bug: page |
+| UX | `/good`, `/bad`, comment | Direct measure of usefulness; feeds the learning loop | Bad share > 20% over 1 week |
+
+### Debugging a failure
+
+1. A user reports a problem with the reference ID shown on screen, which is the `trace_id`. Alerts link to affected traces.
+2. `/trace <id>` shows the timeline: every step, its duration and status, and what went wrong.
+3. `logs/traces.jsonl` has the complete text of each message and observation (bounded to 4,000 characters per field). `logs/agent.log` has JSON log lines with the same `trace_id`, plus stack traces.
+4. `/stats all` shows whether this is one bad turn or a trend.
+
+### Production
+
+The same spans and events map onto managed services: OpenTelemetry → **Cloud Trace**; JSON logs → **Cloud Logging**, with a sink to **BigQuery** so failures can be analysed in SQL; custom metrics and alerts → **Cloud Monitoring**; LLM spans, scores and prompt versions → **Langfuse**. Adding one means adding one callback handler. In production, full message text should have restricted access and a retention limit (see [architecture.md §8](architecture.md#8-data-storage--handling)).
+
+**Prototype limitations:** traces are local files with no rotation. `/stats all` reads the whole file. The alert thresholds above are design only: the prototype computes the metrics but sends no alerts.
+

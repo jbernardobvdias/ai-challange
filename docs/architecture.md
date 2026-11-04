@@ -400,7 +400,7 @@ The prototype keeps the same graph, tools and guard logic, and swaps managed ser
 | Saved reports, audit log | Postgres | SQLite (`data/app.db`, created on first run) |
 | Golden trios | GCS + pgvector | `data/golden_trios/*.json` + in-memory similarity *(stretch)* |
 | Persona | `prompt_versions` + admin console | `config/persona.yaml`, re-read every turn *(stretch)* |
-| Observability | Cloud Logging/Trace/Monitoring + Langfuse | JSONL logs & traces in `logs/`, `/trace` and `/stats` CLI commands |
+| Observability | Cloud Logging/Trace/Monitoring + Langfuse | `logs/traces.jsonl` and JSON `logs/agent.log`, `/trace`, `/stats`, `/good`, `/bad` CLI commands |
 
 ```mermaid
 flowchart LR

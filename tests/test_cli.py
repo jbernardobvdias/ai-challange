@@ -18,11 +18,12 @@ class FakeAgent:
 
 
 @pytest.fixture
-def chat(monkeypatch):
+def chat(monkeypatch, tmp_path):
     def make(behaviour):
         monkeypatch.setenv("GOOGLE_API_KEY", "x")
         monkeypatch.setenv("GCP_PROJECT", "x")
         monkeypatch.setenv("GEMINI_MODEL", "primary-model")
+        monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
         monkeypatch.setattr(cli, "build_agent", lambda *_: FakeAgent(behaviour))
         instance = cli.ChatCLI("alice", verbose=False)
         instance.console = Console(file=io.StringIO(), width=120)

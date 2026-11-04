@@ -10,10 +10,9 @@ from langchain_core.tools import BaseTool
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from agent.config import Settings
+from agent.observability import emit
 from agent.resilience import CircuitBreaker, ErrorKind, classify_llm_error
 from agent.safety.input_guard import Classification
-
-logger = logging.getLogger(__name__)
 
 
 class ModelsUnavailable(Exception):
@@ -34,15 +33,16 @@ class ModelChain:
 
     def invoke(self, messages: Any) -> Any:
         last_error: Exception | None = None
-        for name, model, breaker in self.links:
+        for position, (name, model, breaker) in enumerate(self.links):
             if not breaker.allow():
+                emit("model_skipped", model=name)
                 continue
             try:
                 response = model.invoke(messages)
             except Exception as e:
                 last_error = e
                 kind, retry_after = classify_llm_error(e)
-                logger.warning("model %s failed (%s): %s", name, kind.value, str(e)[:200])
+                emit("model_failed", logging.WARNING, model=name, kind=kind.value, error=str(e)[:300])
                 if kind is ErrorKind.QUOTA:
                     breaker.trip(retry_after)
                 elif kind is ErrorKind.TRANSIENT:
@@ -51,8 +51,10 @@ class ModelChain:
             breaker.record_success()
             # Gemini occasionally returns nothing, e.g. after a malformed function call.
             if isinstance(response, AIMessage) and not response.text and not response.tool_calls:
-                logger.warning("model %s returned an empty response", name)
+                emit("model_empty_response", logging.WARNING, model=name)
                 continue
+            if position > 0:
+                emit("fallback_used", logging.WARNING, model=name)
             return response
         raise ModelsUnavailable(str(last_error)[:300] if last_error else "no usable response from any model")
 
