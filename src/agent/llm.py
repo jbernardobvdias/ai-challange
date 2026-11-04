@@ -5,6 +5,7 @@ from langchain_core.tools import BaseTool
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from agent.config import Settings
+from agent.safety.input_guard import Classification
 
 
 def _gemini(model: str, timeout_s: float, attempts: int) -> BaseChatModel:
@@ -18,3 +19,9 @@ def build_llm(settings: Settings, tools: list[BaseTool]) -> Runnable:
     primary = _gemini(settings.model, settings.llm_timeout_s, attempts=1).bind_tools(tools)
     fallback = _gemini(settings.fallback_model, settings.llm_timeout_s, attempts=2).bind_tools(tools)
     return primary.with_fallbacks([fallback])
+
+
+def build_classifier(settings: Settings) -> Runnable:
+    """Cheap, fast model for screening input. Failures are handled by the InputGuard."""
+    model = _gemini(settings.fallback_model, settings.classifier_timeout_s, attempts=1)
+    return model.with_structured_output(Classification)

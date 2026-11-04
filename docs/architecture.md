@@ -350,15 +350,23 @@ flowchart LR
     M[User message] --> L1["1 · Edge<br/>IAP auth, Cloud Armor rate limit"]
     L1 --> L2["2 · Input guard<br/>Model Armor + scope classifier"]
     L2 --> L3["3 · Hardened system prompt<br/>analysis-only, no PII, tool rules"]
-    L3 --> L4["4 · SQL Guard (sqlglot)<br/>SELECT-only · table allowlist<br/>PII column block · scope rewrite<br/>LIMIT · bytes cap"]
+    L3 --> L4["4 · SQL Guard (sqlglot)<br/>SELECT-only · table allowlist<br/>PII column block · secure views<br/>LIMIT · bytes cap"]
     L4 --> L5["5 · BigQuery IAM<br/>read-only SA · policy tags deny PII"]
     L5 --> L6["6 · Result filter<br/>drop PII columns, cap rows"]
     L6 --> L7["7 · Output guard<br/>regex + DLP scan of final text"]
     L7 --> R[Answer]
 ```
 
-- **Per-user data scope**: the SQL Guard rewrites every reference to `products` into a filtered subquery limited to the user's entitled brands/categories, so joined `order_items`/`orders` are scoped through the product. In production this is backed by BigQuery **row-level access policies** on authorized views per entitlement group.
-- **PII**: blocked at SQL level (layer 4), unreadable at IAM level (layer 5), and scrubbed at output (layers 6–7). `user_id` may be used in joins and aggregates but is never displayed.
+- **Secure views**: the SQL Guard rewrites every table reference into a subquery that exposes only non-PII columns and only rows within the user's product scope. `products` is filtered directly; `order_items`, `orders` and `users` are limited to items, orders and buyers of those products. Queries that read a whole row (`SELECT *`, `SELECT u`, `TO_JSON_STRING(u)`) therefore cannot reach personal data, because it is not in what the query can see. In production this is backed by BigQuery **row-level access policies** on authorized views per entitlement group.
+- **Identity**: the user comes from the authenticated session through the run config. It is not a tool argument, so the model cannot choose whose scope applies.
+- **PII**: rejected at SQL level (layer 4), unreadable at IAM level (layer 5), and filtered in results and output (layers 6–7).
+
+**Known limitations of the prototype**
+- Customer keys are pseudonymous rather than PII (assumption, see README §10). Columns named `user_id` or `customer_id` are removed from results by name, but a query can rename a key (`SELECT id AS x FROM users`), and the model is relied on not to display it. Production would need column lineage or tokenised keys.
+- Small-group re-identification is not prevented: an aggregate can describe very few customers. Production would suppress groups below a minimum size.
+- `orders.num_of_item` counts every item in an order, including items outside the user's scope. `order_items` is the accurate table for scoped analysis.
+- The output scrubber recognises patterns (emails, phones, addresses, coordinates), not a bare person's name. Names are blocked at column level; production adds DLP.
+- If the input classifier is unavailable, messages pass through to the main agent. Rules, the SQL guard and output filters do not depend on it.
 
 ---
 

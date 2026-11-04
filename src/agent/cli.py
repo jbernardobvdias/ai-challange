@@ -18,6 +18,7 @@ from rich.syntax import Syntax
 
 from agent.app import build_agent
 from agent.config import ConfigError, Settings
+from agent.users import UserDirectory
 
 HELP = """\
 Ask questions about sales, customers, products and orders in plain English.
@@ -31,21 +32,22 @@ Commands:
 EXAMPLES = [
     "What data do we have available?",
     "What was our monthly revenue over the last 6 months?",
-    "Compare the Jeans and Swim categories and explain why they perform differently",
+    "Which of the products I manage perform best, and why?",
 ]
 
 RECURSION_LIMIT = 25  # max graph steps per turn; a hard stop against runaway tool loops
 
 
 class ChatCLI:
-    def __init__(self, user: str, verbose: bool) -> None:
+    def __init__(self, user_id: str, verbose: bool) -> None:
         self.console = Console()
-        self.user = user
+        users = UserDirectory()
+        self.user = users.get(user_id)
         self.verbose = verbose
         self.thread_id = self._new_thread()
         self.session: PromptSession = PromptSession(history=InMemoryHistory())
         with self.console.status("Connecting to Gemini and BigQuery…"):
-            self.agent = build_agent(Settings.from_env())
+            self.agent = build_agent(Settings.from_env(), users)
 
     @staticmethod
     def _new_thread() -> str:
@@ -54,12 +56,13 @@ class ChatCLI:
     def run(self) -> None:
         examples = "\n".join(f"  • {e}" for e in EXAMPLES)
         self.console.print(Panel(
-            f"Signed in as [bold]{self.user}[/]. Type /help for commands.\n\nTry:\n{examples}",
+            f"Signed in as [bold]{self.user.name}[/]\nAccess: {self.user.scope.describe()}\n"
+            f"Type /help for commands.\n\nTry:\n{examples}",
             title="Retail Analytics Assistant", border_style="cyan",
         ))
         while True:
             try:
-                text = self.session.prompt(f"\n{self.user} › ").strip()
+                text = self.session.prompt(f"\n{self.user.id} › ").strip()
             except (EOFError, KeyboardInterrupt):
                 break
             if not text:
@@ -85,7 +88,10 @@ class ChatCLI:
         return True
 
     def _turn(self, text: str) -> None:
-        config = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": RECURSION_LIMIT}
+        config = {
+            "configurable": {"thread_id": self.thread_id, "user_id": self.user.id},
+            "recursion_limit": RECURSION_LIMIT,
+        }
         final: AIMessage | None = None
         try:
             with self.console.status("Thinking…") as status:

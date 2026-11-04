@@ -125,17 +125,17 @@ Defense in depth — **never rely on the LLM alone**:
 | Layer | Mechanism |
 |-------|-----------|
 | 1. Input guardrail | Classify request: in-scope analysis / out-of-scope / prompt injection / PII request. Refuse politely if not analysis. Hardened system prompt. |
-| 2. SQL validator (deterministic, `sqlglot`) | Only a single `SELECT`; no DML/DDL; table allowlist (4 tables); **block PII columns** (incl. `SELECT *` on `users`, expanded and checked); enforce `LIMIT`; `maximum_bytes_billed`; dry-run cost check. |
-| 3. Per-user data scope (row-level) | Each app user has an entitlement (e.g. allowed `brand`/`category`/`department`). Validator rewrites the query so `products` (and everything joined through it) is filtered to the user's scope. Prod: BQ **row-level access policies / authorized views** per role. |
+| 2. SQL guard (deterministic, `sqlglot`) | Only a single `SELECT`; no DML/DDL; table allowlist (4 tables); **rejects PII columns** and rewrites every table into a **secure view** without PII columns, so `SELECT *` and whole-row tricks cannot reach them; caps rows. Only the SQL rendered from the checked syntax tree runs. |
+| 3. Per-user data scope (row-level) | Each user has an entitlement (allowed `brand`/`category`/`department`). The secure views limit **all four tables** to that scope, so a query cannot widen it. Prod: BQ **row-level access policies / authorized views** per role. |
 | 4. Result scrubber | Drop any PII-flagged columns from the result before it reaches the LLM; regex/Presidio scan for emails, phones, addresses, names. |
 | 5. Output guardrail | Final answer scanned again for PII before display. |
 | 6. Small-group protection (optional) | Suppress aggregates over < N customers to avoid re-identification. |
 
 **Tasks:**
-- ☐ `config/users.yaml` with demo users + their product scope (e.g. `alice` → brand X, `bob` → category "Jeans").
-- ☐ Implement `sql_guard.py` (parse, validate, rewrite) with unit tests.
-- ☐ Implement `pii.py` (column filter + text scrubber) with unit tests.
-- ☐ Red-team test prompts: "show me emails of top customers", "ignore previous instructions…", "DROP TABLE", "SELECT * FROM users", accessing out-of-scope brands.
+- ☑ `config/users.yaml` with demo users: `alice` (categories), `bob` (brands), `carol` (all products).
+- ☑ `sql_guard.py` (parse, validate, rewrite) with unit tests, plus scope totals and attacks verified on live BigQuery.
+- ☑ `pii.py` (column filter + text scrubber) and `input_guard.py` (rules + classifier) with unit tests.
+- ☑ Red-team test prompts: "show me emails of top customers", "ignore previous instructions…", "DROP TABLE", "SELECT * FROM users", accessing out-of-scope brands.
 
 ### R3. High-Stakes Oversight (Destructive Ops) — *must implement*
 
@@ -267,6 +267,7 @@ ai-challange/
 │   ├── cli.py                 # CLI entrypoint (rich)
 │   ├── app.py                 # wires settings, schema, tools, LLM, graph
 │   ├── config.py              # settings from .env
+│   ├── users.py               # users and product entitlements
 │   ├── schema.py              # loads config/schema.yaml (PII flags)
 │   ├── bigquery_runner.py     # BigQuery client (provided by OpsFleet)
 │   ├── graph.py               # LangGraph state graph
@@ -299,7 +300,7 @@ ai-challange/
 5. Google Cloud project with the BigQuery API enabled → `GCP_PROJECT` in `.env` (queries are billed to your project, within the 1 TB/month free tier).
 6. Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install) and authenticate: `gcloud auth application-default login`
 7. Verify everything: `python scripts/check_setup.py --write-schema` (checks Gemini + BigQuery and writes `config/schema.yaml`)
-8. Run: `python -m agent.cli --user alice` (or `retail-agent --user alice`). Add `-v` to see the SQL and tool results.
+8. Run: `python -m agent.cli --user alice` (or `retail-agent --user alice`). Demo users: `alice`, `bob`, `carol` (see `config/users.yaml`). Add `-v` to see the SQL and tool results.
 9. Tests: `python -m pytest`
 
 > **Free-tier quota:** `gemini-3.8-flash` allows only ~20 requests/day on the free tier. When it is exhausted (429) or overloaded (503), the agent automatically falls back to `GEMINI_FALLBACK_MODEL` (`gemini-3.5-flash-lite`).
@@ -315,7 +316,7 @@ ai-challange/
 | 0 | Send clarifying questions to OpsFleet (see §10); set up repo, venv, GCP auth, Gemini key; verify a BQ query works | 0.5 h | ☐ |
 | 1 | Design docs v1: HLD diagram, sequence diagrams, service choices | 2 h | ☑ |
 | 2 | Core agent: LangGraph graph, Gemini client, `describe_schema`, `run_sql`, CLI loop with conversation memory | 2 h | ☑ |
-| 3 | Safety: SQL guard (sqlglot), PII column/output scrubbing, per-user scope, input guardrail + tests | 2 h | ☐ |
+| 3 | Safety: SQL guard (sqlglot), PII column/output scrubbing, per-user scope, input guardrail + tests | 2 h | ☑ |
 | 4 | Resilience: SQL self-correction loop, retries/backoff/fallback, cost limits, error boundary + tests | 1 h | ☐ |
 | 5 | Saved reports + delete confirmation flow (interrupt, ownership, audit) + tests | 1.5 h | ☐ |
 | 6 | Observability: structured logs, traces, `/trace`, `/stats` | 1 h | ☐ |
@@ -339,4 +340,7 @@ Send these before / while building — record answers and assumptions here:
 9. **Volumes/SLAs:** number of executives, expected latency, budget per query?
 
 ### Assumptions log
-- _(fill in as decisions are made)_
+- **Product access:** each user is entitled to a set of categories, brands or departments (`config/users.yaml`), and sees all four tables limited to those products. Customers are those who bought in-scope products.
+- **PII:** names, emails, street addresses, postal codes, coordinates and `user_geom`. Customer IDs are treated as pseudonymous: usable in queries, not meant for display. City, state, age and gender are allowed.
+- **Authentication:** the prototype simulates sign-in with `--user`.
+- Limitations of these choices are listed in [docs/architecture.md §9](docs/architecture.md#9-security-boundaries).

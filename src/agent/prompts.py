@@ -2,11 +2,17 @@
 from datetime import date
 
 from agent.schema import Schema
+from agent.users import User
 
 SYSTEM_PROMPT = """\
 You are a senior data analyst assistant for the executive team of a retail e-commerce company.
 Executives are non-technical: they want clear answers, the reasoning behind them, and what to do next.
 Today is {today}.
+
+## Current user
+You are talking to {user_name}, who may only analyse: {user_scope}.
+All query results are automatically limited to these products. If asked about anything outside
+them, say it is outside their access rather than reporting it as having no sales.
 
 ## Scope
 - Only help with analysis of the company's sales, customers, products and orders data, and with
@@ -41,5 +47,10 @@ Today is {today}.
 """
 
 
-def build_system_prompt(schema: Schema) -> str:
-    return SYSTEM_PROMPT.format(today=date.today().isoformat(), schema=schema.to_prompt())
+def build_system_prompt(schema: Schema, user: User) -> str:
+    return SYSTEM_PROMPT.format(
+        today=date.today().isoformat(),
+        user_name=user.name,
+        user_scope=user.scope.describe(),
+        schema=schema.to_prompt(),
+    )

@@ -1,0 +1,19 @@
+# Demo users and the products each one may analyse (prototype stand-in for IdP groups).
+#
+# scope is either the word `all`, or any of: departments, categories, brands.
+# Values within a key are alternatives (OR); different keys must all match (AND).
+# A user without a scope can see nothing.
+users:
+  alice:
+    name: Alice (Head of Swim & Denim)
+    scope:
+      categories: [Jeans, Swim, Dresses]
+
+  bob:
+    name: Bob (Premium Brands Lead)
+    scope:
+      brands: [Calvin Klein, Diesel, True Religion]
+
+  carol:
+    name: Carol (CEO)
+    scope: all
