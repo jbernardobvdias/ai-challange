@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Data analysis chat assistant for retail executives (OpsFleet assignment)"
 requires-python = ">=3.11"
 
+[project.scripts]
+retail-agent = "agent.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

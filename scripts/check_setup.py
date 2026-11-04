@@ -89,17 +89,23 @@ def check_bigquery() -> BigQueryRunner | None:
 
 def write_schema(runner: BigQueryRunner) -> None:
     print("4. Schema dump")
+    out = ROOT / "config" / "schema.yaml"
+    # Keep hand-written descriptions from a previous dump; BigQuery has none.
+    old = yaml.safe_load(out.read_text())["tables"] if out.exists() else {}
+
     schema = {"dataset": runner.dataset_id, "tables": {}}
     for table in TABLES:
         pii = PII_COLUMNS.get(table, set())
+        old_table = old.get(table, {})
+        old_desc = {c["name"]: c.get("description", "") for c in old_table.get("columns", [])}
         columns = runner.get_table_schema(table)
         for col in columns:
+            col["description"] = col["description"] or old_desc.get(col["name"], "")
             col["pii"] = col["name"] in pii
-        schema["tables"][table] = {"description": "", "columns": columns}
+        schema["tables"][table] = {"description": old_table.get("description", ""), "columns": columns}
         ok(f"{table}: {len(columns)} columns ({sum(c['pii'] for c in columns)} PII)")
 
-    out = ROOT / "config" / "schema.yaml"
-    out.write_text(yaml.safe_dump(schema, sort_keys=False, allow_unicode=True))
+    out.write_text(yaml.safe_dump(schema, sort_keys=False, allow_unicode=True, width=200))
     ok(f"written to {out.relative_to(ROOT)}")
 
 

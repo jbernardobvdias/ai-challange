@@ -1,239 +1,239 @@
 dataset: bigquery-public-data.thelook_ecommerce
 tables:
   orders:
-    description: ''
+    description: One row per customer order (order header). Join to order_items on order_id, to users on user_id.
     columns:
     - name: order_id
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: Primary key.
       pii: false
     - name: user_id
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: Customer who placed the order (FK users.id). Internal key - never display.
       pii: false
     - name: status
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: 'Order status: ''Complete'', ''Shipped'', ''Processing'', ''Cancelled'', ''Returned''.'
       pii: false
     - name: gender
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: 'Customer gender at order time: ''F'' or ''M''.'
       pii: false
     - name: created_at
       type: TIMESTAMP
       mode: NULLABLE
-      description: ''
+      description: Order timestamp (UTC). Data starts 2019-01 and is updated daily up to the present.
       pii: false
     - name: returned_at
       type: TIMESTAMP
       mode: NULLABLE
-      description: ''
+      description: Return timestamp; NULL if not returned.
       pii: false
     - name: shipped_at
       type: TIMESTAMP
       mode: NULLABLE
-      description: ''
+      description: Shipping timestamp; NULL if not shipped.
       pii: false
     - name: delivered_at
       type: TIMESTAMP
       mode: NULLABLE
-      description: ''
+      description: Delivery timestamp; NULL if not delivered.
       pii: false
     - name: num_of_item
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: Number of items in the order.
       pii: false
   order_items:
-    description: ''
+    description: 'One row per item sold. This is the revenue table: revenue = SUM(sale_price). Join to products on product_id = products.id, to orders on order_id.'
     columns:
     - name: id
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: Primary key.
       pii: false
     - name: order_id
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: FK orders.order_id.
       pii: false
     - name: user_id
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: FK users.id. Internal key - never display.
       pii: false
     - name: product_id
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: FK products.id.
       pii: false
     - name: inventory_item_id
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: Inventory unit sold (internal).
       pii: false
     - name: status
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: 'Item status: ''Complete'', ''Shipped'', ''Processing'', ''Cancelled'', ''Returned''. Exclude ''Cancelled'' and ''Returned'' for net revenue.'
       pii: false
     - name: created_at
       type: TIMESTAMP
       mode: NULLABLE
-      description: ''
+      description: Timestamp the item was ordered (UTC).
       pii: false
     - name: shipped_at
       type: TIMESTAMP
       mode: NULLABLE
-      description: ''
+      description: Shipping timestamp; NULL if not shipped.
       pii: false
     - name: delivered_at
       type: TIMESTAMP
       mode: NULLABLE
-      description: ''
+      description: Delivery timestamp; NULL if not delivered.
       pii: false
     - name: returned_at
       type: TIMESTAMP
       mode: NULLABLE
-      description: ''
+      description: Return timestamp; NULL if not returned.
       pii: false
     - name: sale_price
       type: FLOAT
       mode: NULLABLE
-      description: ''
+      description: Price paid for the item in USD (equals products.retail_price). Revenue = SUM(sale_price).
       pii: false
   products:
-    description: ''
+    description: Product catalog (~29k products, departments Women/Men, 26 categories, ~3k brands).
     columns:
     - name: id
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: Primary key.
       pii: false
     - name: cost
       type: FLOAT
       mode: NULLABLE
-      description: ''
+      description: Unit cost in USD. Gross margin = sale_price - cost.
       pii: false
     - name: category
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: Product category, e.g. 'Jeans', 'Tops & Tees', 'Swim', 'Outerwear & Coats', 'Intimates'.
       pii: false
     - name: name
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: Product name.
       pii: false
     - name: brand
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: Brand name.
       pii: false
     - name: retail_price
       type: FLOAT
       mode: NULLABLE
-      description: ''
+      description: List price in USD.
       pii: false
     - name: department
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: '''Women'' or ''Men''.'
       pii: false
     - name: sku
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: Stock keeping unit code.
       pii: false
     - name: distribution_center_id
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: Distribution center that ships the product.
       pii: false
   users:
-    description: ''
+    description: Customers (~100k). Contains PII columns which must never be queried or shown; use demographics (age, gender, city, state, country, traffic_source) in aggregates only.
     columns:
     - name: id
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: Primary key. Internal key - never display.
       pii: false
     - name: first_name
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: PII - forbidden.
       pii: true
     - name: last_name
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: PII - forbidden.
       pii: true
     - name: email
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: PII - forbidden.
       pii: true
     - name: age
       type: INTEGER
       mode: NULLABLE
-      description: ''
+      description: Age in years (12-70).
       pii: false
     - name: gender
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: '''F'' or ''M''.'
       pii: false
     - name: state
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: State / province / region within the country (e.g. 'California', 'Texas').
       pii: false
     - name: street_address
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: PII - forbidden.
       pii: true
     - name: postal_code
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: PII - forbidden.
       pii: true
     - name: city
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: City.
       pii: false
     - name: country
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: Country, e.g. 'United States', 'China', 'Brasil' (Portuguese spelling), 'Spain' (a few rows use 'España').
       pii: false
     - name: latitude
       type: FLOAT
       mode: NULLABLE
-      description: ''
+      description: PII - forbidden.
       pii: true
     - name: longitude
       type: FLOAT
       mode: NULLABLE
-      description: ''
+      description: PII - forbidden.
       pii: true
     - name: traffic_source
       type: STRING
       mode: NULLABLE
-      description: ''
+      description: 'Acquisition channel: ''Search'', ''Organic'', ''Facebook'', ''Email'', ''Display''.'
       pii: false
     - name: created_at
       type: TIMESTAMP
       mode: NULLABLE
-      description: ''
+      description: Customer sign-up timestamp (UTC).
       pii: false
     - name: user_geom
       type: GEOGRAPHY
       mode: NULLABLE
-      description: ''
+      description: PII - forbidden.
       pii: true
