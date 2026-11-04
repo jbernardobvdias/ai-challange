@@ -19,7 +19,10 @@ class Settings:
     model: str
     fallback_model: str
     llm_timeout_s: float
+    fallback_timeout_s: float
     classifier_timeout_s: float
+    query_timeout_s: float
+    max_query_bytes: int
     max_result_rows: int
 
     @classmethod
@@ -37,6 +40,9 @@ class Settings:
             model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
             fallback_model=os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite"),
             llm_timeout_s=float(os.getenv("LLM_TIMEOUT_S", "30")),
+            fallback_timeout_s=float(os.getenv("FALLBACK_TIMEOUT_S", "60")),
             classifier_timeout_s=float(os.getenv("CLASSIFIER_TIMEOUT_S", "10")),
+            query_timeout_s=float(os.getenv("QUERY_TIMEOUT_S", "30")),
+            max_query_bytes=int(os.getenv("MAX_QUERY_BYTES", str(10**9))),
             max_result_rows=int(os.getenv("MAX_RESULT_ROWS", "50")),
         )

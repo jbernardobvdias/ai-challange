@@ -105,17 +105,22 @@ Detailed sequence diagrams are in [architecture.md §4–7](architecture.md#4-fl
 
 | Failure | Detection | Strategy | User sees |
 |---------|-----------|----------|-----------|
-| SQL rejected by the guard (PII column, DML, unknown table) | SQL Guard | Structured error + hint returned to the model as a tool observation; counts toward the SQL attempt budget. | Nothing (internal), unless the request itself is disallowed → polite refusal. |
-| BigQuery syntax / semantic error | `BadRequest` from BigQuery | Error message + relevant schema excerpt sent back to the model; **max 3 SQL attempts per question**. | Final answer, or a clear explanation after the cap. |
-| Empty result | 0 rows | Run cheap diagnostics (date range, distinct filter values) and hand them to the model once; if still empty, report "no data" honestly. | "No orders match X in this period; data covers A–B." |
-| Query too expensive | Dry run bytes > cap | Reject before execution; model asked to add filters/aggregation. | Nothing, or a request to narrow the question. |
-| Gemini `429` / `5xx` / timeout | SDK error / timeout | Bounded retries with exponential backoff + jitter (2 attempts, 30 s timeout), then **switch to the fallback model**; circuit breaker opens after repeated failures so we stop hammering a failing service. | Slight delay; a note if a degraded model was used. |
-| BigQuery unavailable / timeout | Client error / timeout | Retry transient errors with backoff; circuit breaker; serve from result cache if the same query ran recently. | "The data warehouse is unavailable right now; please try again in a few minutes." |
-| Budget exhausted (LLM calls/tokens per turn) | Counters in graph state | Stop the loop; summarise what was found so far. | Partial answer + what is missing. |
-| Unexpected exception | Top-level boundary per turn | Logged with trace ID; conversation state preserved. | Friendly error with a short reference ID — the CLI never crashes. |
-| Async worker failure | Pub/Sub delivery failure | Automatic redelivery; dead-letter topic + alert after N attempts. User path unaffected. | Nothing. |
+| SQL rejected by the guard (PII column, DML, unknown table) | SQL Guard | Structured error + hint returned to the model as a tool observation; counts toward the failure limit. | Nothing (internal), unless the request itself is disallowed → polite refusal. |
+| BigQuery syntax / semantic error | `BadRequest` from the dry run, which is free | Error message returned to the model, which already has the schema; **stops after 3 consecutive SQL failures**. No retry of the same SQL. | Final answer, or a clear explanation after the limit. |
+| Empty result | 0 rows, or an aggregate returning only NULLs | Hint telling the model to check filters and date range, plus the user's scope; counts toward the failure limit, so it cannot loop. | "No data" stated honestly, or an explanation of the access limit. |
+| Query too expensive | Dry-run bytes above the cap (default 1 GB) | Not executed; model asked to filter or aggregate. `maximum_bytes_billed` is a second cap enforced by BigQuery itself. | Nothing, or a request to narrow the question. |
+| Gemini overloaded / timed out | SDK error / timeout | Primary gets one 30 s attempt, then the **fallback model** (2 attempts, 60 s). **Circuit breaker**: after 2 consecutive failures the primary is skipped for 60 s, so users don't each wait for its timeout. | Slight delay; a note saying the backup model answered. |
+| Gemini quota exhausted | `429` with `retryDelay` | Circuit opens immediately for the delay Google states, which can be hours on the free tier. | As above. |
+| All models down | Every link in the chain fails or is open | Canned message without crashing; conversation preserved. | "I can't reach the AI service right now…" |
+| Input classifier down | Same breaker mechanism | Skipped for 120 s after 2 failures; rules, the SQL guard and output filters keep working. | Nothing. |
+| BigQuery unavailable / timeout | Client error / timeout | One retry with exponential backoff and jitter, 30 s timeout, timed-out jobs cancelled; circuit breaker; recent identical queries served from a 10-minute cache. Credential or permission errors take the same path, since the model can't fix them. | Partial answer if some queries succeeded, otherwise "The data warehouse is unavailable right now…" |
+| Budget exhausted (8 LLM calls or 150k tokens per turn) | Counted from the turn's messages | Stop the loop; one final call without tools summarises what was found. | Partial answer + what is missing, or a request to split the question. |
+| Turn cancelled or crashed mid-tool-call | Tool call without a result in the history | Open tool calls are closed before the next model call, since Gemini would otherwise reject the conversation permanently. | Ctrl-C: "Cancelled". Crash: friendly message with a reference ID (details in `logs/agent.log`). |
+| Async worker failure *(design only)* | Pub/Sub delivery failure | Automatic redelivery; dead-letter topic + alert after N attempts. User path unaffected. | Nothing. |
 
-**Cost control:** SQL attempt cap, LLM-call and token budget per turn, BigQuery dry run + `maximum_bytes_billed`, truncated result sets sent to the model, cached schema and persona, Flash-Lite for cheap steps.
+**Cost control:** failure and call limits per turn, BigQuery dry run + `maximum_bytes_billed`, result cache, at most 50 rows sent to the model, circuit breakers that avoid doomed calls, Flash-Lite for classification. Budgets are derived from the turn's messages rather than kept as separate counters, so they cannot drift out of sync with what actually happened.
+
+**Prototype limitation:** breaker state and the result cache live in one process. Production keeps them in Memorystore so all instances share them.
 
 ---
 

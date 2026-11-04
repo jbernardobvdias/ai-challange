@@ -171,7 +171,7 @@ flowchart TD
 Key design points:
 - **The LLM can never execute a delete.** It can only *propose* one; execution happens in a deterministic node after a human confirmation bound to the exact list of report IDs.
 - **Every SQL statement passes through the SQL Guard inside `run_sql`**, regardless of what the LLM wrote.
-- **Budgets are part of the graph state**: `sql_attempts`, `llm_calls`, `tokens_used`. Exceeding them routes to `graceful_fallback` instead of looping.
+- **Budgets are derived from the turn's messages**: consecutive SQL failures, LLM calls and tokens. Exceeding them routes to `graceful_fallback` instead of looping.
 - New capabilities (charts, email, web search) are **added as tools** in the registry; the graph does not change.
 
 ---
@@ -204,7 +204,7 @@ sequenceDiagram
     API->>BQ: dry run (bytes estimate ≤ cap?)
     API->>BQ: execute (timeout, maximum_bytes_billed)
     BQ-->>API: error: Unrecognized name `order_date`
-    API->>LLM: observation: BQ error + relevant schema excerpt (attempt 2/3)
+    API->>LLM: observation: BQ error (failure 2 of max 3)
     LLM-->>API: tool_call run_sql(sql_v3)
     API->>G: validate(sql_v3) → ok
     API->>BQ: execute
@@ -219,8 +219,8 @@ sequenceDiagram
 
 Notes:
 - Guard rejections, BigQuery errors and **empty results** are all returned to the LLM as structured observations (`{"error_type": ..., "message": ..., "hint": ...}`), never as exceptions to the user.
-- For empty results, the hint includes cheap diagnostics (e.g. the real date range of the table or distinct values of the filtered column) so the model can tell "no data" apart from "wrong filter".
-- After the attempt cap (default 3 SQL attempts per question), the graph routes to `graceful_fallback`.
+- For empty results (including aggregates that return only NULLs), the hint asks the model to check its filters and states the user's scope, so it can tell "no data" apart from "wrong filter" or "outside your access".
+- After 3 consecutive SQL failures, or if BigQuery is unavailable, the graph routes to `graceful_fallback` without another model call for the failure itself.
 
 ---
 

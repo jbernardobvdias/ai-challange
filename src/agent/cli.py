@@ -8,6 +8,7 @@ import json
 import logging
 import uuid
 
+from google.auth.exceptions import DefaultCredentialsError
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
@@ -17,7 +18,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from agent.app import build_agent
-from agent.config import ConfigError, Settings
+from agent.config import ROOT, ConfigError, Settings
 from agent.users import UserDirectory
 
 HELP = """\
@@ -35,7 +36,8 @@ EXAMPLES = [
     "Which of the products I manage perform best, and why?",
 ]
 
-RECURSION_LIMIT = 25  # max graph steps per turn; a hard stop against runaway tool loops
+RECURSION_LIMIT = 40  # backstop only: TurnLimits normally ends a turn well before this
+LOG_FILE = ROOT / "logs" / "agent.log"
 
 
 class ChatCLI:
@@ -46,8 +48,9 @@ class ChatCLI:
         self.verbose = verbose
         self.thread_id = self._new_thread()
         self.session: PromptSession = PromptSession(history=InMemoryHistory())
+        self.settings = Settings.from_env()
         with self.console.status("Connecting to Gemini and BigQuery…"):
-            self.agent = build_agent(Settings.from_env(), users)
+            self.agent = build_agent(self.settings, users)
 
     @staticmethod
     def _new_thread() -> str:
@@ -108,10 +111,15 @@ class ChatCLI:
                                 status.update("Analysing results…")
                             elif isinstance(msg, AIMessage):
                                 final = msg
-        except Exception as e:  # per-turn boundary: the chat must never crash
-            logging.exception("turn failed")
+        except KeyboardInterrupt:
+            self.console.print("[dim]Cancelled. You can keep asking questions.[/]")
+            return
+        except Exception:  # per-turn boundary: the chat must never crash
+            reference = uuid.uuid4().hex[:8]
+            logging.exception("turn failed, reference=%s", reference)
             self.console.print(Panel(
-                f"Sorry, something went wrong while answering. Please try again.\n[dim]{type(e).__name__}: {e}[/]",
+                f"Sorry, something went wrong while answering. Your conversation is saved, so please try again.\n"
+                f"[dim]Reference: {reference}[/]",
                 border_style="red",
             ))
             return
@@ -119,6 +127,9 @@ class ChatCLI:
         answer = final.text if final else ""
         self.console.print()
         self.console.print(Markdown(answer or "_I couldn't produce an answer. Please try rephrasing._"))
+        model = final.response_metadata.get("model_name") if final else None
+        if model and model != self.settings.model:
+            self.console.print(f"[dim]Answered by the backup model ({model}).[/]")
 
     def _show_tool_call(self, call: dict) -> None:
         self.console.print(f"[dim]▸ {_tool_label(call)}[/]")
@@ -151,12 +162,19 @@ def main() -> None:
     parser.add_argument("--user", default="alice", help="user to sign in as")
     parser.add_argument("--verbose", "-v", action="store_true", help="show SQL and tool results")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.WARNING)
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    logging.basicConfig(
+        filename=LOG_FILE, level=logging.WARNING,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     try:
         ChatCLI(args.user, args.verbose).run()
     except ConfigError as e:
         Console().print(f"[red]Configuration error:[/] {e}")
+        raise SystemExit(1)
+    except DefaultCredentialsError:
+        Console().print("[red]Not signed in to Google Cloud.[/] Run: gcloud auth application-default login")
         raise SystemExit(1)
 
 

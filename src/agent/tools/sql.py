@@ -13,11 +13,11 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 
-from agent.bigquery_runner import BigQueryRunner
 from agent.safety.pii import drop_sensitive_columns, scrub_text
 from agent.safety.sql_guard import SqlGuard, SqlRejected
 from agent.schema import Schema
 from agent.users import UserDirectory
+from agent.warehouse import QueryTooExpensive, Warehouse, WarehouseUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def _observation(status: str, **fields: Any) -> str:
 
 
 def make_sql_tools(
-    runner: BigQueryRunner,
+    warehouse: Warehouse,
     schema: Schema,
     guard: SqlGuard,
     users: UserDirectory,
@@ -60,15 +60,21 @@ def make_sql_tools(
             return _observation("rejected", error_type=e.code, message=e.message, hint=e.hint)
 
         try:
-            df = runner.execute_query(safe_sql)
+            df = warehouse.execute_query(safe_sql)
+        except WarehouseUnavailable:
+            return _observation("unavailable", message="The data warehouse is unavailable.")
+        except QueryTooExpensive as e:
+            return _observation("rejected", error_type="too_expensive", message=str(e),
+                                hint="Select fewer columns, filter by date, or aggregate.")
         except Exception as e:  # BigQuery errors go back to the model to self-correct
             message, _ = scrub_text(str(e)[:1500])
             return _observation("error", error_type="bigquery_error", message=message)
 
-        if df.empty:
+        # An aggregate over no matching rows returns one row of NULLs, not an empty result.
+        if df.empty or df.isna().all(axis=None):
             return _observation(
                 "empty",
-                message="The query returned 0 rows. Check filters (spelling, date range, status values) "
+                message="The query found no matching data. Check filters (spelling, date range, status values) "
                         f"before concluding there is no data. This user can only see: {user.scope.describe()}.",
             )
 

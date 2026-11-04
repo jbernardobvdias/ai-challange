@@ -172,16 +172,19 @@ Saved Reports library (SQLite): `reports(id, owner_id, conversation_id, title, c
 
 ### R5. Resilience & Graceful Error Handling — *must implement*
 
-- **SQL self-correction loop:** on BQ syntax error / validation error / empty result → feed error + context back to the LLM to fix → **max N (e.g. 2–3) retries**, then a friendly explanation (never a stack trace).
-- **Empty result handling:** distinguish "truly no data" vs. "wrong filter" (e.g. check distinct values / date range) before retrying.
-- **Cost control:** BQ dry-run + `maximum_bytes_billed`, retry cap, per-turn token/LLM-call budget, schema & result caching, truncated result sets sent to the LLM.
-- **3rd-party failures:** `tenacity` exponential backoff + jitter on 429/5xx/timeouts; fallback model (e.g. Flash → Flash-Lite); circuit breaker; timeouts on every external call.
-- **CLI never crashes:** top-level exception boundary per turn; conversation state preserved; clear user messages ("BigQuery is unavailable right now, please try again in a minute").
+- **SQL self-correction:** syntax errors, guard rejections and empty results go back to the model as structured observations. It stops after **3 consecutive failures** with a friendly explanation, never a stack trace.
+- **Empty results:** 0 rows and all-NULL aggregates both count as empty; the hint asks the model to check filters and states the user's scope.
+- **Cost control:** BigQuery dry run + `maximum_bytes_billed` (1 GB), limits of 8 LLM calls and 150k tokens per turn, 10-minute result cache, at most 50 rows sent to the model.
+- **3rd-party failures:** timeouts on every call, fallback model, circuit breakers for the primary model, fallback model, classifier and BigQuery. Quota errors open the circuit for as long as Google says. BigQuery transient errors get one retry with backoff and jitter.
+- **Partial answers:** if an outage or budget stops a turn after some queries succeeded, one final call summarises those results and says what's missing.
+- **CLI never crashes:** per-turn error boundary with a reference ID, Ctrl-C cancels only the current turn, conversation state preserved, logs in `logs/agent.log`.
+
+Full failure table: [docs/technical_design.md §7](docs/technical_design.md#7-error-handling--fallback-strategies).
 
 **Tasks:**
-- ☐ Implement retry/fallback wrappers for Gemini and BigQuery.
-- ☐ Implement the SQL fix loop as a LangGraph sub-graph/node with a counter.
-- ☐ Tests with mocked failures (429, timeout, bad SQL, empty result).
+- ☑ `resilience.py` (circuit breaker, budgets), `warehouse.py` (BigQuery limits), model chain in `llm.py`.
+- ☑ Self-correction and budgets in the LangGraph graph.
+- ☑ Tests with mocked failures (429, 503, timeout, bad SQL, empty result), plus failure injection against real services.
 
 ### R6. Quality Assurance — *design*
 
@@ -273,7 +276,9 @@ ai-challange/
 │   ├── graph.py               # LangGraph state graph
 │   ├── state.py
 │   ├── prompts.py
-│   ├── llm.py                 # Gemini client + retries/fallback
+│   ├── llm.py                 # Gemini model chain with fallback
+│   ├── resilience.py          # circuit breaker, per-turn budgets
+│   ├── warehouse.py           # BigQuery limits, retries, cache
 │   ├── tools/
 │   │   ├── sql.py             # run_sql, describe_schema
 │   │   ├── reports.py         # save/list/delete reports
@@ -317,7 +322,7 @@ ai-challange/
 | 1 | Design docs v1: HLD diagram, sequence diagrams, service choices | 2 h | ☑ |
 | 2 | Core agent: LangGraph graph, Gemini client, `describe_schema`, `run_sql`, CLI loop with conversation memory | 2 h | ☑ |
 | 3 | Safety: SQL guard (sqlglot), PII column/output scrubbing, per-user scope, input guardrail + tests | 2 h | ☑ |
-| 4 | Resilience: SQL self-correction loop, retries/backoff/fallback, cost limits, error boundary + tests | 1 h | ☐ |
+| 4 | Resilience: SQL self-correction loop, retries/backoff/fallback, cost limits, error boundary + tests | 1 h | ☑ |
 | 5 | Saved reports + delete confirmation flow (interrupt, ownership, audit) + tests | 1.5 h | ☐ |
 | 6 | Observability: structured logs, traces, `/trace`, `/stats` | 1 h | ☐ |
 | 7 | Stretch: persona hot-reload, golden-trio RAG, preferences memory, small eval set | 1–2 h | ☐ |
