@@ -79,7 +79,9 @@ def test_trip_never_shorter_than_cooldown():
     (TimeoutError(), ErrorKind.TRANSIENT, 0),
     (ConnectionError(), ErrorKind.TRANSIENT, 0),
     (Exception("400 INVALID_ARGUMENT"), ErrorKind.OTHER, 0),
-    (Exception("404 NOT_FOUND"), ErrorKind.OTHER, 0),
+    (Exception("404 NOT_FOUND"), ErrorKind.SETUP, 0),
+    (Exception("400 INVALID_ARGUMENT API key not valid"), ErrorKind.SETUP, 0),
+    (Exception("403 PERMISSION_DENIED"), ErrorKind.SETUP, 0),
 ])
 def test_classify_llm_error(error, kind, retry_after):
     assert classify_llm_error(error) == (kind, retry_after)

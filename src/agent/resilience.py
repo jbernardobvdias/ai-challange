@@ -82,15 +82,21 @@ class Pacer:
             self._sleep(delay)
 
 
+class ModelsMisconfigured(Exception):
+    """Every model rejected the request because of a bad API key or model name."""
+
+
 class ErrorKind(Enum):
     """Why a model call failed, which decides how the circuit breaker reacts."""
 
     QUOTA = "quota"  # retrying soon is pointless
     TRANSIENT = "transient"  # overloaded or timed out
+    SETUP = "setup"  # bad key or model name: waiting won't help, so the message must say what to fix
     OTHER = "other"  # e.g. a bad request; says nothing about the service's health
 
 
 _QUOTA_RE = re.compile(r"\b(429|RESOURCE_EXHAUSTED)\b")
+_SETUP_RE = re.compile(r"API_KEY_INVALID|API key not valid|PERMISSION_DENIED|UNAUTHENTICATED|NOT_FOUND|\b40[134]\b")
 _TRANSIENT_RE = re.compile(r"\b(500|502|503|504|UNAVAILABLE|DEADLINE_EXCEEDED|INTERNAL)\b")
 _RETRY_DELAY_RE = re.compile(r"""retryDelay['"]?\s*:\s*['"]?(\d+)""")
 
@@ -103,6 +109,8 @@ def classify_llm_error(error: Exception) -> tuple[ErrorKind, float]:
     if _QUOTA_RE.search(text):
         delay = _RETRY_DELAY_RE.search(text)
         return ErrorKind.QUOTA, float(delay.group(1)) if delay else 0.0
+    if _SETUP_RE.search(text):
+        return ErrorKind.SETUP, 0.0
     if _TRANSIENT_RE.search(text):
         return ErrorKind.TRANSIENT, 0.0
     return ErrorKind.OTHER, 0.0
@@ -123,6 +131,7 @@ class StopReason(Enum):
     LLM_CALLS = "llm_calls"
     TOKENS = "tokens"
     WAREHOUSE_UNAVAILABLE = "warehouse_unavailable"
+    WAREHOUSE_SETUP = "warehouse_setup"
 
 
 def current_turn(messages: Sequence[AnyMessage]) -> list[AnyMessage]:
@@ -161,6 +170,8 @@ def _repeated_failed_sql(turn: Sequence[AnyMessage]) -> bool:
 def stop_reason(turn: Sequence[AnyMessage], limits: TurnLimits) -> StopReason | None:
     """Why this turn must stop calling the model, or None if it may continue."""
     statuses = sql_statuses(turn)
+    if "setup_error" in statuses:
+        return StopReason.WAREHOUSE_SETUP
     if "unavailable" in statuses:
         return StopReason.WAREHOUSE_UNAVAILABLE
     if _repeated_failed_sql(turn):

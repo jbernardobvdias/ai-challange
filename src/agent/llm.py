@@ -12,7 +12,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from agent.config import Settings
 from agent.observability import emit
-from agent.resilience import CircuitBreaker, ErrorKind, Pacer, classify_llm_error
+from agent.resilience import CircuitBreaker, ErrorKind, ModelsMisconfigured, Pacer, classify_llm_error
 from agent.safety.input_guard import Classification
 
 MAX_QUOTA_WAIT_S = 45  # free-tier per-minute limits clear within this; daily limits don't
@@ -77,6 +77,8 @@ class ModelChain:
             if position > 0:
                 emit("fallback_used", logging.WARNING, model=name)
             return response
+        if last_error is not None and classify_llm_error(last_error)[0] is ErrorKind.SETUP:
+            raise ModelsMisconfigured(str(last_error)[:300])
         raise ModelsUnavailable(str(last_error)[:300] if last_error else "no usable response from any model")
 
 

@@ -74,7 +74,7 @@ Companion to [architecture.md](architecture.md) (diagrams and flows). This docum
 |------|-------------------------|
 | Deterministic guard nodes around an LLM loop | The agent is an explicit state graph: guard, tool, confirmation and fallback nodes are plain Python functions with conditional edges. |
 | Strict confirmation for destructive actions | Built-in **human-in-the-loop `interrupt()`**: the graph pauses, state is checkpointed, and resumes with the user's decision. |
-| Conversation memory & resumability | **Checkpointers** (SQLite for the prototype, Postgres in production) persist state per conversation thread. |
+| Conversation memory & resumability | **Checkpointers** (in-memory for the prototype, so a conversation ends when the CLI exits; Postgres in production) persist state per conversation thread. |
 | Self-correction with a bounded budget | Retry counters live in the graph state; conditional edges route to a graceful fallback when exhausted. |
 | Extensibility | New capabilities are new tools bound to the model; the graph stays the same. |
 | Observability | Every node/tool call is a discrete step that we can wrap with tracing; native integration with Langfuse/OpenTelemetry. |
@@ -113,6 +113,7 @@ Detailed sequence diagrams are in [architecture.md §4–7](architecture.md#4-fl
 | Gemini overloaded / timed out | SDK error / timeout | Primary gets one 30 s attempt, then the **fallback model** (2 attempts, 60 s). **Circuit breaker**: after 2 consecutive failures the primary is skipped for 60 s, so users don't each wait for its timeout. | Slight delay; a note saying the backup model answered. |
 | Gemini quota exhausted | `429` with `retryDelay` | Requests are paced to stay under the limit (4 s apart; measured free-tier limit 15 per minute). A short delay on the last-resort model is waited out once. Otherwise the circuit opens for the delay Google states, which can be hours for daily limits. | A short wait, or as above. |
 | All models down | Every link in the chain fails or is open | Canned message without crashing; conversation preserved. | "I can't reach the AI service right now…" |
+| Setup problem | Bad API key or model name; BigQuery project, API or login rejected | No retries, no wasted model calls. Stops at once and names what to fix. | "This looks like a setup problem… check GCP_PROJECT…" |
 | Input classifier down | Same breaker mechanism | Skipped for 120 s after 2 failures; rules, the SQL guard and output filters keep working. | Nothing. |
 | BigQuery unavailable | Client error | One retry with exponential backoff and jitter; circuit breaker; recent identical queries served from a 10-minute cache. Credential or permission errors take the same path, since the model can't fix them. | Partial answer if some queries succeeded, otherwise "The data warehouse is unavailable right now…" |
 | Budget exhausted (8 LLM calls or 150k tokens per turn) | Counted from the turn's messages | Stop the loop; one final call without tools summarises what was found. | Partial answer + what is missing, or a request to split the question. |
@@ -170,9 +171,9 @@ Model tokens are the only cost that grows quickly with usage, which is why they 
 
 | Recorded | Details |
 |----------|---------|
-| Turn | `trace_id`, session, user, question, outcome, latency, time waiting for the user, tokens |
-| Each model call | model, graph node, messages sent, last input, output, tool calls with arguments, tokens, finish reason, latency, error. The system prompt is stored as a hash, which identifies the version without repeating it. |
-| Each tool call | arguments (the SQL), full observation (rows or structured error), status, latency. BigQuery job ID and bytes billed are recorded as an event. |
+| Turn | `trace_id`, session, user, question, outcome, latency, time waiting for the user, tokens, billed bytes, estimated cost |
+| Each model call | model, graph node, messages sent, last input, output, tool calls with arguments, tokens, finish reason, latency, error. The span refers to the system prompt by hash, and the full text is stored once in the same file. |
+| Each tool call | arguments (the SQL), full observation (rows or structured error), status, latency. BigQuery job ID and bytes billed are recorded as an event, and each job carries app, user and trace ID labels. |
 | Each graph node | latency and status, including when paused for confirmation |
 | Domain events | input check verdict, SQL guard rejection and code, model failure and kind, fallback used, circuit opened, model skipped, BigQuery bytes and cache hit, BigQuery retry, PII scrubbed, turn stopped and why, delete proposed, executed, cancelled or expired |
 
@@ -202,7 +203,7 @@ All metrics are computed from traces (`summarize()`), so there is one source of 
 
 1. A user reports a problem with the reference ID shown on screen, which is the `trace_id`. Alerts link to affected traces.
 2. `/trace <id>` shows the timeline: every step, its duration and status, and what went wrong.
-3. `logs/traces.jsonl` has the complete text of each message and observation (bounded to 4,000 characters per field). `logs/agent.log` has JSON log lines with the same `trace_id`, plus stack traces.
+3. `logs/traces.jsonl` has the text of each message and observation (bounded to 20,000 characters per field), and each system prompt, found by the span's `system_prompt_sha`. Users can only open their own traces in the CLI. `logs/agent.log` has JSON log lines with the same `trace_id`, plus stack traces.
 4. `/stats all` shows whether this is one bad turn or a trend.
 
 ### Production

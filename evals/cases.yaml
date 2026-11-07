@@ -109,6 +109,15 @@ cases:
       PASS only if the answer is a report with a summary, specific figures, insights, and concrete action
       items that follow from those insights. It must cover Q3 2026 and contain no personal data.
 
+  - id: q1_report_period
+    kind: judged
+    must_be_saved: true
+    user: alice
+    question: Create a Q1 report with insights and action items for Q2
+    rubric: >-
+      PASS only if the report covers Q1 (January to March) of a specific year, with action items for
+      Q2. FAIL if it reports mainly on a different quarter, such as Q3 or Q4.
+
   - id: uses_golden_definition
     kind: judged
     user: carol

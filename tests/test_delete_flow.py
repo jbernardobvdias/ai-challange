@@ -368,3 +368,24 @@ def test_reading_another_users_report_fails(store):
     chat = Chat(store, call("get_report", report_id=theirs.id), AIMessage("Not found."))
     result = chat.send("Open report")
     assert not any("Secret margin" in m.text for m in result["messages"])
+
+
+@pytest.mark.parametrize("question, title, saved", [
+    ("Create a Q1 report with action items for Q2", "Q3 2026 Performance Report & Q4 Outlook", False),
+    ("Create a q1 report", "Q1 2026 Performance Report", True),
+    ("Create a Q1 report with action items for Q2", "Q2 Action Plan from Q1 Results", True),
+    ("Create a sales report", "Q3 2026 Performance Report", True),
+])
+def test_report_title_must_name_the_quarter_asked_for(store, question, title, saved):
+    chat = Chat(store, call("create_report", title=title, content="Text"), AIMessage("Rewriting."))
+    chat.send(question)
+    assert bool(store.find("alice")) is saved
+
+
+def test_wrong_period_goes_back_to_the_model_to_fix(store):
+    wrong = call("create_report", title="Q3 2026 Report", content="Q3")
+    right = AIMessage("", tool_calls=[{"name": "create_report", "args": {"title": "Q1 2026 Report", "content": "Q1"}, "id": "second"}])
+    chat = Chat(store, wrong, right)
+    result = chat.send("Create a Q1 report")
+    assert [r.title for r in store.find("alice")] == ["Q1 2026 Report"]
+    assert result["messages"][-1].text.startswith("Q1")

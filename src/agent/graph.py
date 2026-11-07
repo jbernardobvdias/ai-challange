@@ -25,6 +25,7 @@ from langgraph.types import Command, interrupt
 from agent.golden import GoldenIndex, format_examples
 from agent.observability import emit
 from agent.resilience import (
+    ModelsMisconfigured,
     StopReason,
     TurnLimits,
     close_dangling_tool_calls,
@@ -46,7 +47,14 @@ MODELS_DOWN_MESSAGE = (
     "I can't reach the AI service right now, so I couldn't answer that. "
     "Your conversation is saved. Please try again in a minute."
 )
+MODELS_SETUP_MESSAGE = (
+    "Gemini rejected the request, so this looks like a setup problem rather than your question. "
+    "Check GOOGLE_API_KEY and GEMINI_MODEL in .env, or run: python scripts/check_setup.py"
+)
 GIVE_UP_MESSAGES = {
+    StopReason.WAREHOUSE_SETUP: "BigQuery rejected the connection, so this looks like a setup problem rather than your "
+                                "question. Check GCP_PROJECT in .env, that the BigQuery API is enabled, and your gcloud "
+                                "login, or run: python scripts/check_setup.py",
     StopReason.SQL_FAILURES: "I couldn't get a working query for this after several attempts, so I'd rather not "
                              "guess. Could you rephrase it, or narrow it to a specific period or product group?",
     StopReason.LLM_CALLS: "This needed more steps than I can take in one go. Could you split it into smaller questions?",
@@ -112,6 +120,9 @@ def build_graph(
         prompt = system_prompt(user) + state.get("examples", "")
         try:
             return {"messages": [llm.invoke([SystemMessage(prompt), *history])]}
+        except ModelsMisconfigured as e:
+            emit("models_unavailable", logging.ERROR, error=str(e)[:300], kind="setup")
+            return {"messages": [AIMessage(MODELS_SETUP_MESSAGE)]}
         except Exception as e:
             emit("models_unavailable", logging.ERROR, error=str(e)[:300])
             return {"messages": [AIMessage(MODELS_DOWN_MESSAGE)]}

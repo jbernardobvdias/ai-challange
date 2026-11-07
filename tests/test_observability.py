@@ -14,7 +14,7 @@ from rich.console import Console
 
 from agent.graph import build_graph
 from agent.llm import ModelChain
-from agent.observability import JsonLogFormatter, Telemetry, _clean, emit, setup_logging, summarize
+from agent.observability import JsonLogFormatter, Pricing, Telemetry, _clean, emit, setup_logging, summarize
 from agent.resilience import CircuitBreaker
 from agent.safety.input_guard import InputGuard
 from agent.safety.sql_guard import SqlGuard
@@ -143,9 +143,9 @@ def test_personal_data_never_reaches_the_trace_file(tmp_path):
     assert "[email redacted]" in stored
 
 
-@pytest.mark.parametrize("value", ["x" * 5000])
+@pytest.mark.parametrize("value", ["x" * 30_000])
 def test_long_values_are_bounded(value):
-    assert len(_clean(value)) < 4100
+    assert len(_clean(value)) < 20_100
 
 
 def test_outcome_refused(tmp_path):
@@ -237,15 +237,15 @@ def test_load_skips_damaged_lines_and_finds_by_prefix(tmp_path):
         pass
     turns, _ = telemetry.load()
     assert len(turns) == 2
-    assert telemetry.find_turn(first.trace_id[:6])["question"] == "first"
-    assert telemetry.find_turn()["question"] == "second"
-    assert telemetry.find_turn("nope") is None
+    assert telemetry.find_turn("alice", first.trace_id[:6])["question"] == "first"
+    assert telemetry.find_turn("alice")["question"] == "second"
+    assert telemetry.find_turn("alice", "nope") is None
 
 
 def test_past_sessions_are_readable(tmp_path):
     with Telemetry(tmp_path).new_turn("alice", "t", "old question") as old:
         pass
-    assert Telemetry(tmp_path).find_turn(old.trace_id)["question"] == "old question"
+    assert Telemetry(tmp_path).find_turn("alice", old.trace_id)["question"] == "old question"
 
 
 def test_summarize(tmp_path):
@@ -279,6 +279,7 @@ def test_views_render_and_treat_stored_text_literally(tmp_path):
     printed = console.file.getvalue()
     assert "[bold]odd[/bold]" in printed
     assert trace["trace_id"] in printed and "run_sql" in printed
+    assert "$0.0" in printed and "\\$" not in printed
 
 
 def test_json_logs_carry_the_trace_id_and_no_personal_data(tmp_path):
@@ -324,3 +325,57 @@ def test_quality_metrics(tmp_path):
     assert stats["sql_attempts_per_turn"] == 2
     assert stats["sql_empty_rate"] == 0
     assert stats["tokens_per_turn"] == 360
+
+
+def test_users_cannot_open_each_others_traces(tmp_path):
+    telemetry = Telemetry(tmp_path)
+    with telemetry.new_turn("carol", "t", "secret question") as theirs:
+        pass
+    assert telemetry.find_turn("alice", theirs.trace_id) is None
+    assert telemetry.find_turn("alice", theirs.trace_id[:3]) is None
+    assert telemetry.find_turn("alice") is None
+    assert telemetry.find_turn("carol", theirs.trace_id)["question"] == "secret question"
+
+
+def test_stats_can_be_limited_to_one_user(tmp_path):
+    telemetry = Telemetry(tmp_path)
+    with telemetry.new_turn("carol", "t", "q") as theirs:
+        pass
+    with telemetry.new_turn("alice", "t", "q") as mine:
+        pass
+    telemetry.record_feedback(theirs.trace_id, "bad")
+    telemetry.record_feedback(mine.trace_id, "good")
+    turns, feedback = telemetry.load("alice")
+    assert [t["user_id"] for t in turns] == ["alice"]
+    assert [f["score"] for f in feedback] == ["good"]
+
+
+def test_the_full_system_prompt_can_be_recovered_from_a_trace(tmp_path):
+    h = Harness(tmp_path, fake_model(text("Hi.")))
+    trace = h.ask("Hello")
+    sha = spans(trace, "llm")[0]["system_prompt_sha"]
+    assert h.telemetry.find_prompt(sha) == "system prompt"
+    h.telemetry.session_turns.clear()
+    assert len(h.telemetry.load()[0]) == 1  # prompt records are not mistaken for turns or feedback
+    assert h.telemetry.load()[1] == []
+
+
+def test_each_prompt_is_stored_once(tmp_path):
+    h = Harness(tmp_path, fake_model(text("a"), text("b")))
+    h.ask("One")
+    h.ask("Two")
+    assert h.telemetry.path.read_text().count('"type": "prompt"') == 1
+
+
+def test_stored_prompts_contain_no_personal_data(tmp_path):
+    telemetry = Telemetry(tmp_path)
+    telemetry.write_prompts({"abc": "Example a@b.com"})
+    assert "a@b.com" not in telemetry.path.read_text()
+
+
+def test_cost_is_estimated_from_tokens_and_billed_bytes(tmp_path):
+    telemetry = Telemetry(tmp_path, Pricing(llm_usd_per_million_tokens=1.0, bigquery_usd_per_tib=8.0))
+    with telemetry.new_turn("alice", "t", "q") as trace:
+        trace.add_event("bigquery_query", {"bytes": 1, "bytes_billed": 2**40, "cached": False})
+    assert telemetry.session_turns[-1]["estimated_cost_usd"] == 8.0
+    assert summarize(telemetry.session_turns)["estimated_cost_usd"] == 8.0

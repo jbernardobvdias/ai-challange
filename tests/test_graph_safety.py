@@ -16,7 +16,7 @@ from agent.graph import build_graph
 from agent.llm import ModelsUnavailable
 from agent.persona import Persona
 from agent.prompts import build_system_prompt
-from agent.resilience import TurnLimits
+from agent.resilience import ModelsMisconfigured, TurnLimits
 from agent.safety.input_guard import Classification, InputGuard
 from agent.safety.sql_guard import SqlGuard
 from agent.schema import Schema
@@ -24,7 +24,7 @@ from agent.storage.profiles import ProfileStore
 from agent.storage.reports_store import ReportStore
 from agent.tools.sql import make_sql_tools
 from agent.users import UserDirectory
-from agent.warehouse import QueryTooExpensive, WarehouseUnavailable
+from agent.warehouse import QueryTooExpensive, WarehouseMisconfigured, WarehouseUnavailable
 
 FQ_USERS = "`bigquery-public-data.thelook_ecommerce.users`"
 
@@ -260,3 +260,19 @@ def test_cancelled_turn_does_not_break_the_conversation():
     sent = llm.calls[0]
     index = next(i for i, m in enumerate(sent) if getattr(m, "tool_calls", None))
     assert isinstance(sent[index + 1], ToolMessage)
+
+
+def test_bigquery_setup_problem_stops_at_once_and_says_what_to_fix():
+    llm = ScriptedLLM(sql_call(GOOD_SQL))
+    messages = ask(make_resilient_agent(llm, FlakyRunner(WarehouseMisconfigured("bad project"))), "Orders?")
+    assert len(llm.calls) == 1
+    assert "GCP_PROJECT" in messages[-1].text
+
+
+def test_gemini_setup_problem_says_what_to_fix():
+    class BadKey:
+        def invoke(self, _):
+            raise ModelsMisconfigured("API key not valid")
+
+    messages = ask(make_resilient_agent(BadKey(), RecordingRunner()), "Orders?")
+    assert "GOOGLE_API_KEY" in messages[-1].text

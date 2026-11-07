@@ -2,7 +2,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from agent.llm import ModelChain, ModelsUnavailable
-from agent.resilience import CircuitBreaker
+from agent.resilience import CircuitBreaker, ModelsMisconfigured
 from agent.safety.input_guard import Classification, InputGuard
 
 
@@ -134,3 +134,20 @@ def test_failure_then_empty_response_is_not_treated_as_success():
     primary, fallback = Model(OVERLOADED), Model(AIMessage(""))
     with pytest.raises(ModelsUnavailable):
         ModelChain([link(primary), link(fallback)]).invoke("q")
+
+
+def test_bad_api_key_is_reported_as_a_setup_problem():
+    bad_key = Exception("400 INVALID_ARGUMENT API key not valid")
+    with pytest.raises(ModelsMisconfigured):
+        ModelChain([link(Model(bad_key)), link(Model(bad_key))]).invoke("q")
+
+
+def test_retired_primary_model_still_falls_back():
+    assert ModelChain([link(Model(Exception("404 NOT_FOUND"))), link(Model(OK))]).invoke("q") is OK
+
+
+def test_setup_errors_do_not_open_the_circuit():
+    breaker = CircuitBreaker("m", 1, 60)
+    with pytest.raises(ModelsMisconfigured):
+        ModelChain([("m", Model(Exception("401 UNAUTHENTICATED")), breaker)]).invoke("q")
+    assert breaker.allow()

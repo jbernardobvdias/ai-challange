@@ -133,7 +133,7 @@ python evals/run.py               # real model and BigQuery; uses API quota
 python scripts/validate_golden.py # checks the golden trios against the guard and a dry run
 ```
 
-Latest evaluation on the real model and BigQuery: **16/16 passed** ([results](evals/results.json), [details](docs/requirements.md#6-quality-assurance)). It's a small set: it catches regressions rather than measuring accuracy overall. An item-by-item self-audit against the assignment's requirements is in [VERIFICATION_REPORT.md](VERIFICATION_REPORT.md).
+Latest evaluation on the real model and BigQuery: **17/17 passed** ([results](evals/results.json), [details](docs/requirements.md#6-quality-assurance)). It's a small set: it catches regressions rather than measuring accuracy overall.
 
 ## Framework
 

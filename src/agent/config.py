@@ -32,6 +32,8 @@ class Settings:
     llm_min_interval_s: float
     log_level: str
     customer_key_salt: str | None
+    llm_usd_per_million_tokens: float
+    bigquery_usd_per_tib: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -60,4 +62,6 @@ class Settings:
             llm_min_interval_s=float(os.getenv("LLM_MIN_INTERVAL_S", "4")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             customer_key_salt=os.getenv("CUSTOMER_KEY_SALT") or None,
+            llm_usd_per_million_tokens=float(os.getenv("LLM_USD_PER_MILLION_TOKENS", "0.50")),
+            bigquery_usd_per_tib=float(os.getenv("BIGQUERY_USD_PER_TIB", "6.25")),
         )

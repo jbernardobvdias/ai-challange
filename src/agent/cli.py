@@ -22,7 +22,7 @@ from rich.text import Text
 
 from agent.app import build_agent
 from agent.config import ConfigError, Settings
-from agent.observability import Telemetry, setup_logging, summarize
+from agent.observability import Pricing, Telemetry, setup_logging, summarize
 from agent.trace_view import render_stats, render_trace
 from agent.users import UserDirectory
 
@@ -31,8 +31,8 @@ Ask questions about sales, customers, products and orders in plain English.
 
 Commands:
   /new             start a new conversation
-  /trace [id]      show every step of the last answer, or of a past one
-  /stats [all]     show metrics for this session, or for all sessions
+  /trace [id]      show every step of your last answer, or of a past one
+  /stats [all]     show metrics for this session, or for all your sessions
   /good, /bad [note]   rate the last answer
   /help            show this help
   /exit            quit (or Ctrl-D)
@@ -59,7 +59,10 @@ class ChatCLI:
         self.session: PromptSession = PromptSession(history=InMemoryHistory())
         self.settings = Settings.from_env()
         setup_logging(self.settings.log_dir, self.settings.log_level)
-        self.telemetry = Telemetry(self.settings.log_dir)
+        self.telemetry = Telemetry(
+            self.settings.log_dir,
+            Pricing(self.settings.llm_usd_per_million_tokens, self.settings.bigquery_usd_per_tib),
+        )
         with self.console.status("Connecting to Gemini and BigQuery…"):
             self.agent = build_agent(self.settings, users)
 
@@ -111,7 +114,7 @@ class ChatCLI:
         return True
 
     def _show_trace(self, trace_id: str | None) -> None:
-        trace = self.telemetry.find_turn(trace_id)
+        trace = self.telemetry.find_turn(self.user.id, trace_id)
         if trace is None:
             self.console.print("[yellow]No trace found.[/]")
         else:
@@ -119,14 +122,14 @@ class ChatCLI:
 
     def _show_stats(self, everything: bool) -> None:
         if everything:
-            stats, title = summarize(*self.telemetry.load()), "Metrics: all sessions"
+            stats, title = summarize(*self.telemetry.load(self.user.id)), "Metrics: all your sessions"
         else:
             stats = summarize(self.telemetry.session_turns, self.telemetry.session_feedback)
             title = "Metrics: this session"
         self.console.print(render_stats(stats, title))
 
     def _feedback(self, score: str, comment: str) -> None:
-        latest = self.telemetry.find_turn()
+        latest = self.telemetry.find_turn(self.user.id)
         if latest is None:
             self.console.print("[yellow]There is no answer to rate yet.[/]")
             return

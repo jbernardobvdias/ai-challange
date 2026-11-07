@@ -24,6 +24,7 @@ logging.getLogger("sqlglot").setLevel(logging.ERROR)  # rejected input is handle
 
 _BLOCKED_FUNCTIONS = {"EXTERNAL_QUERY", "VECTOR_SEARCH"}
 _BLOCKED_NAMESPACES = {"ML", "AI"}  # billable model calls
+_BLOCKED_NODES = (exp.Parameter, exp.SessionUser, exp.CurrentUser)  # reveal the project or the signed-in account
 
 
 class SqlRejected(Exception):
@@ -80,6 +81,8 @@ class SqlGuard:
                 )
 
     def _reject_blocked_functions(self, tree: exp.Expression) -> None:
+        if tree.find(*_BLOCKED_NODES):
+            raise SqlRejected("blocked_function", "Session and system information is not available.")
         for fn in tree.find_all(exp.Anonymous):
             if fn.name.upper() in _BLOCKED_FUNCTIONS:
                 raise SqlRejected("blocked_function", f"Function {fn.name.upper()} is not allowed.")

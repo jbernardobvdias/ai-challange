@@ -1,9 +1,11 @@
 import pandas as pd
 import pytest
-from google.api_core.exceptions import BadRequest, Forbidden, ServiceUnavailable
+from google.api_core.exceptions import BadRequest, Forbidden, ServiceUnavailable, Unauthorized
+from google.auth.exceptions import RefreshError
 
+from agent.observability import Telemetry
 from agent.resilience import CircuitBreaker
-from agent.warehouse import QueryTooExpensive, Warehouse, WarehouseUnavailable
+from agent.warehouse import QueryTooExpensive, Warehouse, WarehouseMisconfigured, WarehouseUnavailable
 
 
 class FakeJob:
@@ -102,11 +104,31 @@ def test_circuit_opens_and_later_calls_fail_fast():
     assert client.runs == 4  # 2 queries x 2 attempts, then the circuit is open
 
 
-def test_expired_credentials_are_unavailable_and_not_retried():
-    client = FakeClient(errors=[Forbidden("Access denied")])
-    with pytest.raises(WarehouseUnavailable):
-        warehouse(client).execute_query("SELECT 1")
+@pytest.mark.parametrize("error", [
+    Forbidden("BigQuery API has not been used in project x"),
+    Unauthorized("Request had invalid credentials"),
+    RefreshError("Token expired"),
+])
+def test_login_and_api_problems_are_setup_errors_and_not_retried(error):
+    client = FakeClient(errors=[error])
+    wh = warehouse(client)
+    with pytest.raises(WarehouseMisconfigured):
+        wh.execute_query("SELECT 1")
     assert client.runs == 1
+    assert wh.breaker.allow()
+
+
+def test_wrong_project_is_a_setup_error_not_a_sql_error():
+    client = FakeClient(dry_run_error=BadRequest("ProjectId must be non-empty"))
+    with pytest.raises(WarehouseMisconfigured):
+        warehouse(client).execute_query("SELECT 1")
+
+
+def test_jobs_carry_labels_that_join_to_the_trace(tmp_path):
+    client = FakeClient()
+    with Telemetry(tmp_path).new_turn("Alice B", "t", "q") as trace:
+        warehouse(client).execute_query("SELECT 1")
+    assert client.configs[0].labels == {"app": "retail-analyst-agent", "trace_id": trace.trace_id, "user": "alice_b"}
 
 
 def test_rate_limit_is_retried():

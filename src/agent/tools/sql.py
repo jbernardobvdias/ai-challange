@@ -18,7 +18,7 @@ from agent.safety.pii import drop_sensitive_columns, scrub_text
 from agent.safety.sql_guard import SqlGuard, SqlRejected
 from agent.schema import Schema
 from agent.users import UserDirectory
-from agent.warehouse import QueryTooExpensive, Warehouse, WarehouseUnavailable
+from agent.warehouse import QueryTooExpensive, Warehouse, WarehouseMisconfigured, WarehouseUnavailable
 
 
 def _observation(status: str, **fields: Any) -> str:
@@ -61,6 +61,8 @@ def make_sql_tools(
 
         try:
             df = warehouse.execute_query(safe_sql)
+        except WarehouseMisconfigured:
+            return _observation("setup_error", message="BigQuery rejected the project, API or login.")
         except WarehouseUnavailable:
             return _observation("unavailable", message="The data warehouse is unavailable.")
         except QueryTooExpensive as e:

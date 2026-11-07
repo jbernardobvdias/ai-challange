@@ -4,6 +4,7 @@ Wraps the client from BigQueryRunner. Exceptions tell the caller what to do next
 - BadRequest / NotFound: the SQL is wrong, so the model should fix it.
 - QueryTooExpensive: too big or too slow, so the model should narrow the query.
 - WarehouseUnavailable: nothing the model can do, so stop and tell the user.
+- WarehouseMisconfigured: a project, API or login problem, so tell the user what to fix.
 """
 import logging
 import threading
@@ -22,13 +23,15 @@ from google.api_core.exceptions import (
     NotFound,
     ServiceUnavailable,
     TooManyRequests,
+    Unauthorized,
 )
 from google.api_core.retry import Retry
+from google.auth.exceptions import GoogleAuthError
 from google.cloud import bigquery
 from google.cloud.bigquery.retry import DEFAULT_RETRY
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
-from agent.observability import emit
+from agent.observability import emit, job_labels
 from agent.resilience import CircuitBreaker
 
 _TRANSIENT = (
@@ -41,8 +44,20 @@ class QueryTooExpensive(Exception):
     """The query scans too much or takes too long."""
 
 
+class WarehouseMisconfigured(Exception):
+    """BigQuery refused because of the project, API or login. The query isn't the problem."""
+
+
 class WarehouseUnavailable(Exception):
     """BigQuery can't be reached or refuses access, so the model can't fix this."""
+
+
+def _is_setup_error(error: Exception) -> bool:
+    if isinstance(error, (BadRequest, NotFound)):  # usually bad SQL, unless it names the project
+        return "ProjectId" in str(error) or "Not found: Project" in str(error)
+    if isinstance(error, Forbidden):
+        return not any(reason in str(error) for reason in ("rateLimitExceeded", "quotaExceeded"))
+    return isinstance(error, (Unauthorized, GoogleAuthError))
 
 
 def _is_transient(error: BaseException) -> bool:
@@ -112,11 +127,14 @@ class Warehouse:
             raise WarehouseUnavailable("BigQuery circuit is open")
         try:
             df = self._execute_with_retries(sql)
-        except (BadRequest, NotFound, QueryTooExpensive):
-            self.breaker.record_success()  # BigQuery answered; the query is the problem
-            raise
-        except Exception as e:  # outages, but also expired credentials or a disabled API
-            self.breaker.record_failure()
+        except Exception as e:
+            if _is_setup_error(e):
+                emit("warehouse_setup_error", logging.ERROR, error=str(e)[:300])
+                raise WarehouseMisconfigured(str(e)[:300]) from e
+            if isinstance(e, (BadRequest, NotFound, QueryTooExpensive)):
+                self.breaker.record_success()  # BigQuery answered; the query is the problem
+                raise
+            self.breaker.record_failure()  # an outage
             emit("warehouse_unavailable", logging.ERROR, error=str(e)[:300])
             raise WarehouseUnavailable(str(e)[:300]) from e
         self.breaker.record_success()
@@ -137,7 +155,7 @@ class Warehouse:
 
         job = self.client.query(
             sql,
-            job_config=bigquery.QueryJobConfig(maximum_bytes_billed=self.max_query_bytes),
+            job_config=bigquery.QueryJobConfig(maximum_bytes_billed=self.max_query_bytes, labels=job_labels()),
             retry=api_retry, timeout=self.timeout_s, job_retry=None,
         )
         try:

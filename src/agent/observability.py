@@ -11,12 +11,14 @@ import contextvars
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 import uuid
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -29,7 +31,7 @@ from agent.safety.pii import scrub_text
 
 logger = logging.getLogger("agent.events")
 
-MAX_STRING_CHARS = 4000
+MAX_STRING_CHARS = 20_000
 _INJECTED_ARGS = {"state", "config"}  # tool arguments the model does not write
 
 _current: contextvars.ContextVar["TurnTrace | None"] = contextvars.ContextVar("current_trace", default=None)
@@ -47,6 +49,23 @@ def _clean(value: Any) -> Any:
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     return _clean(str(value))
+
+
+@dataclass(frozen=True)
+class Pricing:
+    """Illustrative list prices for estimating cost. Free tiers are not deducted."""
+
+    llm_usd_per_million_tokens: float = 0.50
+    bigquery_usd_per_tib: float = 6.25
+
+
+def job_labels() -> dict[str, str]:
+    """Labels for a BigQuery job, so its billing and audit logs can be joined to the trace."""
+    trace = _current.get()
+    labels = {"app": "retail-analyst-agent"}
+    if trace is not None:
+        labels |= {"trace_id": trace.trace_id, "user": re.sub(r"[^a-z0-9_-]", "_", trace.user_id.lower())[:63]}
+    return labels
 
 
 def current_trace_id() -> str | None:
@@ -136,12 +155,17 @@ class _SpanRecorder(BaseCallbackHandler):
                             metadata: dict | None = None, **kw: Any) -> None:
         batch = messages[0]
         system = next((m for m in batch if isinstance(m, SystemMessage)), None)
+        prompt_sha = None
+        if system:
+            prompt = _message_text(system)
+            prompt_sha = hashlib.sha256(prompt.encode()).hexdigest()[:10]
+            self.trace.prompts[prompt_sha] = prompt
         self._start(
             run_id, "llm", (metadata or {}).get("ls_model_name", "unknown"), metadata,
             input_messages=len(batch),
             input_last=_message_text(batch[-1]) if batch else "",
-            # Identifies the prompt version without repeating it in every span.
-            system_prompt_sha=hashlib.sha256(_message_text(system).encode()).hexdigest()[:10] if system else None,
+            # Identifies the prompt without repeating it in every span. Telemetry stores each one once.
+            system_prompt_sha=prompt_sha,
         )
 
     def on_llm_end(self, response: Any, *, run_id: Any, **kw: Any) -> None:
@@ -186,6 +210,7 @@ class TurnTrace:
         self.user_id, self.session_id, self.question = user_id, session_id, question
         self.spans: list[dict[str, Any]] = []
         self.events: list[dict[str, Any]] = []
+        self.prompts: dict[str, str] = {}
         self.outcome: str | None = None
         self.error: str | None = None
         self.waiting_s = 0.0
@@ -226,6 +251,7 @@ class TurnTrace:
             self.outcome, self.error = "error", f"{exc_type.__name__}: {exc}"
             logger.error("turn failed", exc_info=(exc_type, exc, tb))
         try:
+            self.telemetry.write_prompts(self.prompts)
             self.telemetry.write_turn(self._record())
         except Exception:
             logger.exception("could not write trace")  # telemetry must never break the agent
@@ -248,6 +274,10 @@ class TurnTrace:
             spans = sorted(self.spans, key=lambda s: s["start_ms"])
             events = list(self.events)
         llm = [s for s in spans if s["kind"] == "llm"]
+        tokens = sum(s.get("total_tokens", 0) for s in llm)
+        billed = sum(e.get("bytes_billed") or 0 for e in events if e["name"] == "bigquery_query")
+        pricing = self.telemetry.pricing
+        cost = tokens / 1e6 * pricing.llm_usd_per_million_tokens + billed / 2**40 * pricing.bigquery_usd_per_tib
         return _clean({
             "type": "turn",
             "trace_id": self.trace_id,
@@ -260,18 +290,25 @@ class TurnTrace:
             "latency_ms": round((time.monotonic() - self._started - self.waiting_s) * 1000),
             "waiting_ms": round(self.waiting_s * 1000),
             "llm_calls": len(llm),
-            "total_tokens": sum(s.get("total_tokens", 0) for s in llm),
+            "total_tokens": tokens,
+            "bytes_billed": billed,
+            "estimated_cost_usd": round(cost, 6),
             "spans": spans,
             "events": events,
         })
 
 
+DEFAULT_PRICING = Pricing()
+
+
 class Telemetry:
     """Stores traces and feedback as JSON lines."""
 
-    def __init__(self, log_dir: Path) -> None:
+    def __init__(self, log_dir: Path, pricing: Pricing = DEFAULT_PRICING) -> None:
         log_dir.mkdir(parents=True, exist_ok=True)
         self.path = log_dir / "traces.jsonl"
+        self.pricing = pricing
+        self._written_prompts: set[str] = set()
         self.session_turns: list[dict[str, Any]] = []
         self.session_feedback: list[dict[str, Any]] = []
         self._lock = threading.Lock()
@@ -282,6 +319,13 @@ class Telemetry:
     def _append(self, record: dict[str, Any]) -> None:
         with self._lock, self.path.open("a") as f:
             f.write(json.dumps(record, default=str) + "\n")
+
+    def write_prompts(self, prompts: dict[str, str]) -> None:
+        """Store each system prompt once, so a trace can show exactly what the model was told."""
+        for sha, text in prompts.items():
+            if sha not in self._written_prompts:
+                self._append(_clean({"type": "prompt", "sha": sha, "text": text}))
+                self._written_prompts.add(sha)
 
     def write_turn(self, record: dict[str, Any]) -> None:
         self.session_turns.append(record)
@@ -295,8 +339,8 @@ class Telemetry:
         self.session_feedback.append(record)
         self._append(record)
 
-    def load(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """All turns and feedback on disk. A damaged line is skipped, not fatal."""
+    def load(self, user_id: str | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Turns and feedback on disk, optionally for one user. A damaged line is skipped, not fatal."""
         turns, feedback = [], []
         if self.path.exists():
             for line in self.path.read_text().splitlines():
@@ -304,14 +348,31 @@ class Telemetry:
                     record = json.loads(line)
                 except ValueError:
                     continue
-                (turns if record.get("type") == "turn" else feedback).append(record)
-        return turns, feedback
+                if record.get("type") == "turn" and user_id in (None, record["user_id"]):
+                    turns.append(record)
+                elif record.get("type") == "feedback":
+                    feedback.append(record)
+        ids = {t["trace_id"] for t in turns}
+        return turns, [f for f in feedback if f["trace_id"] in ids]
 
-    def find_turn(self, trace_id: str | None = None) -> dict[str, Any] | None:
-        """A turn by ID or ID prefix. Without an ID, the latest one."""
+    def find_prompt(self, sha: str) -> str | None:
+        """The full system prompt behind a span's system_prompt_sha."""
+        if self.path.exists():
+            for line in self.path.read_text().splitlines():
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if record.get("type") == "prompt" and record["sha"] == sha:
+                    return record["text"]
+        return None
+
+    def find_turn(self, user_id: str, trace_id: str | None = None) -> dict[str, Any] | None:
+        """One of this user's turns, by ID or ID prefix. Without an ID, their latest one this session."""
         if trace_id is None:
-            return self.session_turns[-1] if self.session_turns else None
-        turns, _ = self.load()
+            mine = [t for t in self.session_turns if t["user_id"] == user_id]
+            return mine[-1] if mine else None
+        turns, _ = self.load(user_id)
         return next((t for t in reversed(turns) if t["trace_id"].startswith(trace_id)), None)
 
 
@@ -352,6 +413,10 @@ def summarize(turns: list[dict[str, Any]], feedback: list[dict[str, Any]] = ()) 
         "llm_time_ms": sum(s["duration_ms"] for s in llm),
         "llm_latency_p50_ms": _percentile([s["duration_ms"] for s in llm], 0.5),
         "llm_latency_p95_ms": _percentile([s["duration_ms"] for s in llm], 0.95),
+        "estimated_cost_usd": round(sum(t.get("estimated_cost_usd", 0) for t in turns), 4),
+        "estimated_cost_per_turn_usd": (
+            round(sum(t.get("estimated_cost_usd", 0) for t in turns) / len(turns), 5) if turns else 0
+        ),
         "tokens_per_turn": round(sum(s.get("total_tokens", 0) for s in llm) / len(turns)) if turns else 0,
         "llm_errors": sum(s["status"] == "error" for s in llm),
         "tokens": sum(s.get("total_tokens", 0) for s in llm),

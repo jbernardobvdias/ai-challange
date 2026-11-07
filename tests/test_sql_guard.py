@@ -157,3 +157,16 @@ def test_keys_are_salted_per_guard():
     assert "'one'" in first
     assert "'one'" not in SqlGuard(schema, key_salt="two").check(f"SELECT id FROM {USERS}", ALL)
     assert SqlGuard(schema)._key_salt != SqlGuard(schema)._key_salt
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT @@project_id AS p",
+    "SELECT @@dataset_id",
+    "SELECT SESSION_USER() AS su",
+    "SELECT CURRENT_USER()",
+    f"SELECT status FROM {ORDERS} WHERE status = @@location",
+])
+def test_system_information_is_not_available(guard, sql):
+    with pytest.raises(SqlRejected) as e:
+        guard.check(sql, ALL)
+    assert e.value.code == "blocked_function"

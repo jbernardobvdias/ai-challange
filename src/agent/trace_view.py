@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-_FAILED = {"error", "rejected", "empty", "unavailable"}
+_FAILED = {"error", "rejected", "empty", "unavailable", "setup_error"}
 
 
 def _seconds(ms: float) -> str:
@@ -76,7 +76,8 @@ def render_trace(trace: dict[str, Any]) -> RenderableType:
     wait = f" (+{_seconds(trace['waiting_ms'])} waiting for you)" if trace["waiting_ms"] else ""
     header = Text(
         f"{trace['user_id']} · {trace['outcome']} · {_seconds(trace['latency_ms'])}{wait} · "
-        f"{trace['llm_calls']} model calls · {trace['total_tokens']:,} tokens\n{_short(trace['question'], 120)}"
+        f"{trace['llm_calls']} model calls · {trace['total_tokens']:,} tokens · "
+        f"est. ${trace.get('estimated_cost_usd', 0):.5f}\n{_short(trace['question'], 120)}"
     )
     parts: list[RenderableType] = [header, timeline]
     if trace.get("error"):
@@ -114,6 +115,7 @@ def render_stats(stats: dict[str, Any], title: str) -> RenderableType:
             ("Calls by model", stats["llm_calls_by_model"]),
             ("Tokens", stats["tokens"]),
             ("Tokens per turn", stats["tokens_per_turn"]),
+            ("Estimated cost / per turn", f"${stats['estimated_cost_usd']:.4f} / ${stats['estimated_cost_per_turn_usd']:.5f}"),
             ("Failures by kind", stats["model_failures_by_kind"]),
             ("Answers from fallback", stats["fallback_answers"]),
             ("Circuits opened", stats["circuits_opened"]),

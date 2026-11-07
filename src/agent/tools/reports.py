@@ -5,10 +5,12 @@ asks the user and carries it out in plain code (see graph.py), so the model cann
 Owner and conversation come from the run config, never from the model.
 """
 import json
+import logging
+import re
 from datetime import timedelta
 from typing import Annotated, Any
 
-from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import InjectedState
@@ -22,6 +24,7 @@ UNDO_WINDOW = timedelta(minutes=10)
 SNIPPET_CHARS = 150
 NEEDS_CONFIRMATION = "needs_confirmation"
 REPORT_CREATED = "report_created"
+_QUARTER_RE = re.compile(r"\bQ[1-4]\b", re.IGNORECASE)
 
 
 def _summary(report: Report) -> dict[str, Any]:
@@ -33,6 +36,14 @@ def _latest_answer(messages: list[AnyMessage]) -> str:
         if isinstance(message, AIMessage) and message.text and not message.tool_calls:
             return message.text
     return ""
+
+
+def _missing_quarters(messages: list[AnyMessage], title: str) -> set[str]:
+    """The quarters the user asked about, if the report's title names none of them."""
+    question = next((m.text for m in reversed(messages) if isinstance(m, HumanMessage)), "")
+    asked = {q.upper() for q in _QUARTER_RE.findall(question)}
+    named = {q.upper() for q in _QUARTER_RE.findall(title)}
+    return set() if asked & named or not asked else asked
 
 
 def _latest_tool_results(messages: list[AnyMessage]) -> list[ToolMessage]:
@@ -96,7 +107,12 @@ def make_report_tools(store: ReportStore) -> list[BaseTool]:
     """Tools for the saved reports library, all limited to the signed-in user."""
 
     @tool
-    def create_report(title: str, content: str, config: RunnableConfig) -> str:
+    def create_report(
+        title: str,
+        content: str,
+        config: RunnableConfig,
+        state: Annotated[dict, InjectedState],
+    ) -> str:
         """Publish a finished report. It is saved to the user's library and shown to them exactly as
         written, so use this instead of writing the report as your answer, and do not repeat it.
 
@@ -104,6 +120,14 @@ def make_report_tools(store: ReportStore) -> list[BaseTool]:
             title: Short descriptive title.
             content: The complete report in markdown.
         """
+        missing = _missing_quarters(state["messages"], title)
+        if missing:
+            emit("report_wrong_period", logging.WARNING, asked=sorted(missing), title=title)
+            return json.dumps({
+                "status": "error",
+                "message": f"Not saved: the user asked about {', '.join(sorted(missing))}, but the title is '{title}'. "
+                           "Write the report for the period they asked for, and name it in the title.",
+            })
         settings = config["configurable"]
         clean_title, _ = scrub_text(title)
         clean_content, _ = scrub_text(content)
