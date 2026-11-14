@@ -46,6 +46,16 @@ def _missing_quarters(messages: list[AnyMessage], title: str) -> set[str]:
     return set() if asked & named or not asked else asked
 
 
+def _result(message: ToolMessage) -> dict[str, Any]:
+    """A tool's JSON result. A failed call (e.g. arguments the model got wrong) is reported by
+    ToolNode as plain text, which goes back to the model to fix rather than crashing the turn."""
+    try:
+        result = json.loads(message.content)
+    except (TypeError, ValueError):
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
 def _latest_tool_results(messages: list[AnyMessage]) -> list[ToolMessage]:
     batch = []
     for message in reversed(messages):
@@ -59,8 +69,8 @@ def created_report_id(messages: list[AnyMessage]) -> int | None:
     """The report just created by the latest tool results, if there is one."""
     for message in _latest_tool_results(messages):
         if message.name == "create_report":
-            result = json.loads(message.content)
-            if result["status"] == REPORT_CREATED:
+            result = _result(message)
+            if result.get("status") == REPORT_CREATED:
                 return result["id"]
     return None
 
@@ -90,8 +100,8 @@ def pending_delete(messages: list[AnyMessage]) -> dict[str, Any] | None:
     """
     batch = _latest_tool_results(messages)
     proposals = [
-        p for p in (json.loads(m.content) for m in batch if m.name == "propose_delete")
-        if p["status"] == NEEDS_CONFIRMATION
+        p for p in (_result(m) for m in batch if m.name == "propose_delete")
+        if p.get("status") == NEEDS_CONFIRMATION
     ]
     if not proposals:
         return None

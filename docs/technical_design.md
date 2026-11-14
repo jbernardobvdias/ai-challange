@@ -75,7 +75,7 @@ Companion to [architecture.md](architecture.md) (diagrams and flows). This docum
 | Deterministic guard nodes around an LLM loop | The agent is an explicit state graph: guard, tool, confirmation and fallback nodes are plain Python functions with conditional edges. |
 | Strict confirmation for destructive actions | Built-in **human-in-the-loop `interrupt()`**: the graph pauses, state is checkpointed, and resumes with the user's decision. |
 | Conversation memory & resumability | **Checkpointers** (in-memory for the prototype, so a conversation ends when the CLI exits; Postgres in production) persist state per conversation thread. |
-| Self-correction with a bounded budget | Retry counters live in the graph state; conditional edges route to a graceful fallback when exhausted. |
+| Self-correction with a bounded budget | Budgets are counted from the turn's messages; a conditional edge routes to a graceful fallback when one is exhausted. |
 | Extensibility | New capabilities are new tools bound to the model; the graph stays the same. |
 | Observability | Every node/tool call is a discrete step that we can wrap with tracing; native integration with Langfuse/OpenTelemetry. |
 
@@ -115,7 +115,7 @@ Detailed sequence diagrams are in [architecture.md §4–7](architecture.md#4-fl
 | All models down | Every link in the chain fails or is open | Canned message without crashing; conversation preserved. | "I can't reach the AI service right now…" |
 | Setup problem | Bad API key or model name; BigQuery project, API or login rejected | No retries, no wasted model calls. Stops at once and names what to fix. | "This looks like a setup problem… check GCP_PROJECT…" |
 | Input classifier down | Same breaker mechanism | Skipped for 120 s after 2 failures; rules, the SQL guard and output filters keep working. | Nothing. |
-| BigQuery unavailable | Client error | One retry with exponential backoff and jitter; circuit breaker; recent identical queries served from a 10-minute cache. Credential or permission errors take the same path, since the model can't fix them. | Partial answer if some queries succeeded, otherwise "The data warehouse is unavailable right now…" |
+| BigQuery unavailable | Client error | One retry with exponential backoff and jitter; circuit breaker; recent identical queries served from a 10-minute cache. | Partial answer if some queries succeeded, otherwise "The data warehouse is unavailable right now…" |
 | Budget exhausted (8 LLM calls or 150k tokens per turn) | Counted from the turn's messages | Stop the loop; one final call without tools summarises what was found. | Partial answer + what is missing, or a request to split the question. |
 | Turn cancelled or crashed mid-tool-call | Tool call without a result in the history | Open tool calls are closed before the next model call, since Gemini would otherwise reject the conversation permanently. | Ctrl-C: "Cancelled". Crash: friendly message with a reference ID (details in `logs/agent.log`). |
 | Async worker failure *(design only)* | Pub/Sub delivery failure | Automatic redelivery; dead-letter topic + alert after N attempts. User path unaffected. | Nothing. |

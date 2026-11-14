@@ -389,3 +389,17 @@ def test_wrong_period_goes_back_to_the_model_to_fix(store):
     result = chat.send("Create a Q1 report")
     assert [r.title for r in store.find("alice")] == ["Q1 2026 Report"]
     assert result["messages"][-1].text.startswith("Q1")
+
+
+@pytest.mark.parametrize("bad_call", [
+    call("create_report", title="Only a title"),  # missing required argument
+    call("propose_delete", report_ids="not-a-list"),  # wrong type
+])
+def test_bad_tool_arguments_go_back_to_the_model_instead_of_crashing(store, bad_call):
+    seed(store)
+    chat = Chat(store, bad_call, AIMessage("Sorry, let me fix that."))
+    result = chat.send("Do it")
+    assert result["messages"][-1].text == "Sorry, let me fix that."
+    assert chat.llm.calls == 2  # the model saw the error and answered again
+    assert not chat.paused
+    assert len(live_ids(store)) == 3

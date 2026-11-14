@@ -70,7 +70,7 @@ Not built: the candidate pipeline and analyst review.
 | **SQL guard** | Parses with `sqlglot`. Only one read-only query, only 4 allowed tables, no PII columns, no risky functions. Caps rows. Only SQL rendered from the checked syntax tree runs, never the model's text. | [sql_guard.py](../src/agent/safety/sql_guard.py) | Yes |
 | **Secure views** | Every table reference is rewritten into a subquery with only non-PII columns, salted hashes for customer keys, and only the user's products | [sql_guard.py](../src/agent/safety/sql_guard.py) | Yes |
 | IAM | Read-only service account. BigQuery policy tags deny PII columns; row-level policies on authorized views. | — | Design |
-| Result filter | Removes PII and customer-key columns by name, and redacts PII patterns, before the model sees results | [pii.py](../src/agent/safety/pii.py) | Yes |
+| Result filter | Removes PII columns by name, and redacts PII patterns, before the model sees results | [pii.py](../src/agent/safety/pii.py) | Yes |
 | Output guard | Scans the final answer. Production adds Cloud DLP. | [graph.py](../src/agent/graph.py) | Yes (patterns) |
 
 **Why secure views rather than a column blocklist.** `SELECT u FROM users u` and `TO_JSON_STRING(u)` read a whole customer row, yet they parse as ordinary columns, so a blocklist misses them. With the rewrite, those columns aren't in what the query can see, so the attack returns nothing to leak.
